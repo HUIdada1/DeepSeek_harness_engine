@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSH Dock · 引擎坞</title>
+<link rel="stylesheet" href="vendor/phosphor-regular.css">
+<link rel="stylesheet" href="vendor/phosphor-fill.css">
+<link rel="stylesheet" href="vendor/fonts.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="chassis">
+    <div class="chassis-inner">
+
+      <div class="titlebar">
+        <img class="logo" src="assets/icon.png" alt="DSH Dock Logo" draggable="false">
+        <span class="name">DSH Dock</span>
+        <span class="sub">DSH 引擎坞 · DEEPSEEK-HARNESS CONTROL UNIT</span>
+        <div class="tb-right">
+          <button class="hw-btn" id="themeBtn" title="切换铝亮 / 石墨暗主题"><i class="ph ph-circle-half"></i><span id="themeLab">DARK</span></button>
+          <button class="hw-btn" id="settingsBtn" title="设置与更新">
+            <i class="ph ph-gear"></i>设置
+            <span class="dot-badge" id="updateDot" hidden></span>
+          </button>
+          <button class="win-btn" id="minBtn" title="最小化"><i class="ph ph-minus"></i></button>
+          <button class="win-btn" id="trayBtn" title="关闭到托盘（服务继续运行）"><i class="ph ph-arrow-corner-down-right"></i></button>
+          <button class="win-btn close" id="closeBtn" title="关闭窗口"><i class="ph ph-x"></i></button>
+        </div>
+      </div>
+
+      <main>
+        <div class="deck">
+
+          <!-- 核心舱：表盘即电源 -->
+          <aside class="module core" style="--boot:60ms">
+            <span class="rail"></span>
+            <button class="gauge-wrap stopped" id="gaugeBtn" aria-label="点击启动或停止服务">
+              <svg class="gauge" viewBox="0 0 240 240" fill="none" aria-hidden="true">
+                <circle class="ticks" cx="120" cy="120" r="106" stroke-width="2"
+                        stroke-dasharray="1.6 8.62" stroke-linecap="round" transform="rotate(-90 120 120)"/>
+                <circle class="track" cx="120" cy="120" r="90" stroke-width="7"/>
+                <circle class="arc" id="gaugeArc" cx="120" cy="120" r="90" stroke-width="7" stroke-linecap="round"
+                        transform="rotate(-90 120 120)"
+                        stroke-dasharray="565.49 565.49" stroke-dashoffset="565.49"/>
+              </svg>
+              <div class="readout stopped" id="readout">
+                <div class="st"><span class="dot"></span><span id="stateText">已停止</span></div>
+                <div class="up" id="readUp">UP 00:00:00</div>
+                <div class="probe">PROBE <b id="readProbe">--</b> · 5s</div>
+                <div class="act-hint" id="actHint">点击启动</div>
+              </div>
+            </button>
+            <div class="core-actions">
+              <button class="hw-btn" id="restartBtn" disabled><i class="ph ph-arrows-clockwise"></i>重启</button>
+              <button class="hw-btn" id="openBtn" disabled><i class="ph ph-arrow-square-out"></i>打开界面</button>
+              <button class="hw-btn" id="copyBtn" disabled><i class="ph ph-copy"></i>复制 URL</button>
+            </div>
+            <div class="spec">
+              <div class="spec-row"><span class="k">URL</span><span class="v" id="specUrl">未运行</span></div>
+              <div class="spec-row"><span class="k">PID</span><span class="v" id="specPid">--</span></div>
+              <div class="spec-row"><span class="k">MODE</span><span class="v" id="specMode">--</span></div>
+              <div class="spec-row"><span class="k">关闭行为</span><span class="v" id="specClose">托盘常驻</span></div>
+            </div>
+            <p class="note" style="margin-top:12px">表盘即电源：点击启动，再点停止。关闭窗口到托盘不影响服务。</p>
+          </aside>
+
+          <!-- 01 NODE -->
+          <section class="module" style="--boot:160ms">
+            <span class="rail"></span>
+            <header class="mod-head"><span class="mod-no">01</span><h2>Node Runtime</h2><span class="mod-led off" id="nodeLed"></span></header>
+            <div class="row">
+              <div class="grow">
+                <span class="f-label">Node 可执行文件 · 自动检测，可自定义</span>
+                <input class="well" id="nodePathInput" value="" placeholder="检测中…" spellcheck="false">
+              </div>
+              <button class="hw-btn" id="detectNodeBtn" style="height:34px"><i class="ph ph-magnifying-glass"></i>检测</button>
+            </div>
+            <div class="row" style="align-items:center">
+              <div class="ver-readout">
+                <span class="big" id="nodeBig">--</span>
+                <span class="fit" id="nodeFit" hidden><i></i>满足 ^22.19 或 ≥24</span>
+                <span class="fit bad" id="nodeBad" hidden><i class="bad"></i>不满足引擎要求</span>
+              </div>
+            </div>
+            <div class="row" style="align-items:flex-start">
+              <div class="grow">
+                <span class="f-label">版本切换 · 仅注入启动进程 PATH，不改全局</span>
+                <div class="bank" id="verBank"></div>
+              </div>
+            </div>
+            <p class="note" id="nodeNote">切换不修改全局环境，重启服务即回退；检测到 nvm-windows 时可选全局 use。</p>
+          </section>
+
+          <!-- 02 PROJECT -->
+          <section class="module" style="--boot:260ms">
+            <span class="rail"></span>
+            <header class="mod-head"><span class="mod-no">02</span><h2>Project</h2><span class="mod-led off" id="projLed"></span></header>
+            <div class="row">
+              <div class="grow">
+                <span class="f-label">仓库路径 · 自动获取，可自定义</span>
+                <input class="well" id="projPathInput" value="" placeholder="自动检测中…" spellcheck="false">
+              </div>
+              <button class="hw-btn" id="browseBtn" style="height:34px"><i class="ph ph-folder"></i>浏览</button>
+            </div>
+            <div class="row">
+              <div class="grow">
+                <span class="f-label">启动方式</span>
+                <div class="bank" id="modeBank">
+                  <button class="lamp-btn" data-mode="source"><i class="dot"></i>SOURCE</button>
+                  <button class="lamp-btn" data-mode="npm"><i class="dot"></i>NPM</button>
+                </div>
+              </div>
+            </div>
+            <div class="leds" id="readinessLeds">
+              <div class="led-row"><i class="led off"></i>Node ≥ 22.19<span class="val" id="rdNode">--</span></div>
+              <div class="led-row"><i class="led off"></i>pnpm<span class="val" id="rdPnpm">--</span></div>
+              <div class="led-row"><i class="led off"></i>依赖已安装<span class="val" id="rdDeps">--</span></div>
+              <div class="led-row"><i class="led off"></i>构建产物可用<span class="val" id="rdBuild">--</span></div>
+            </div>
+            <div class="meter-well"><div class="meter-fill" id="initFill"></div></div>
+            <div class="meter-cap">
+              <span id="initLab">一键初始化 · install + build</span>
+              <span style="display:flex; gap:8px; align-items:center">
+                <span id="initPct">--</span>
+                <button class="hw-btn" id="initBtn"><i class="ph ph-play"></i>初始化</button>
+              </span>
+            </div>
+          </section>
+        </div>
+
+        <!-- 03 TELEMETRY -->
+        <section class="console" style="--boot:380ms">
+          <div class="console-head">
+            <h2><span class="mod-no">03</span>Telemetry · 运行日志</h2>
+            <div class="tools">
+              <button class="hw-btn filter on" data-filter="all">ALL</button>
+              <button class="hw-btn filter" data-filter="info">INFO</button>
+              <button class="hw-btn filter" data-filter="warn">WARN</button>
+              <button class="hw-btn filter" data-filter="err">ERR</button>
+              <button class="hw-btn" id="exportBtn"><i class="ph ph-download-simple"></i>导出</button>
+              <button class="hw-btn" id="logFolderBtn"><i class="ph ph-folder-open"></i>日志</button>
+              <button class="hw-btn" id="clearBtn"><i class="ph ph-broom"></i>清空</button>
+            </div>
+          </div>
+          <div class="log-body" id="logBody"></div>
+          <div class="console-foot">
+            <span>UTF-8</span><span>自动滚动 ON</span>
+            <span class="sp" id="logFileLabel"></span>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- 设置弹窗：热更新 + 配置 -->
+  <div class="overlay" id="overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="设置">
+      <div class="modal-head">
+        <span class="mod-no">SET</span>
+        <h2>Settings · 设置</h2>
+        <button class="modal-close" id="modalClose" aria-label="关闭设置"><i class="ph ph-x"></i></button>
+      </div>
+
+      <!-- 04 UPDATE -->
+      <section class="m-sec">
+        <header class="mod-head"><span class="mod-no">04</span><h2>Update · 热更新</h2><span class="mod-led" id="upLed"></span></header>
+        <div class="up-rows">
+          <div class="spec-row">
+            <span class="k">自动检测</span>
+            <span style="display:flex; align-items:center; gap:10px">
+              <span class="mono hint-text" id="autoCheckHint">每 1 小时 · 启动 60s 后首查</span>
+              <span class="switch on" id="autoCheckSwitch" role="switch"><span class="lever"></span></span>
+            </span>
+          </div>
+          <div class="spec-row"><span class="k">当前版本</span><span class="v mono" id="curVer">--</span></div>
+          <div class="spec-row"><span class="k">更新状态</span><span class="v mono" id="updateStateText">--</span></div>
+          <div class="spec-row" id="latestRow" hidden>
+            <span class="k">最新版本</span>
+            <span class="new-lamp" id="newLamp"><i></i><span id="latestVer">--</span></span>
+          </div>
+        </div>
+        <div class="notes-well" id="notesWell" hidden></div>
+        <div class="meter-well" id="dlMeter" hidden><div class="meter-fill" id="dlFill"></div></div>
+        <div class="up-actions">
+          <button class="hw-btn primary" id="dlBtn"><i class="ph ph-download-simple"></i>下载更新</button>
+          <button class="hw-btn" id="installBtn" disabled><i class="ph ph-arrow-clockwise"></i>安装并重启</button>
+          <button class="hw-btn" id="checkBtn"><i class="ph ph-arrows-clockwise"></i>立即检查</button>
+          <button class="hw-btn" id="releasesBtn"><i class="ph ph-github-logo"></i>Releases</button>
+        </div>
+        <p class="note" id="portableNote" hidden>当前为便携版：仅提示新版本，请到 GitHub Releases 手动下载。</p>
+      </section>
+
+      <!-- 05 CONFIGURATION -->
+      <section class="m-sec">
+        <header class="mod-head"><span class="mod-no">05</span><h2>Configuration · 配置</h2></header>
+        <div class="row" style="align-items:flex-start">
+          <div class="grow">
+            <span class="f-label">关闭窗口时</span>
+            <div class="bank" id="closeBank">
+              <button class="lamp-btn" data-close="tray"><i class="dot"></i>托盘</button>
+              <button class="lamp-btn" data-close="exit"><i class="dot"></i>退出</button>
+              <button class="lamp-btn" data-close="ask"><i class="dot"></i>询问</button>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="align-items:center">
+          <div class="grow" style="display:flex; align-items:center; gap:12px">
+            <div class="grow">
+              <span class="f-label">关窗后服务保持</span>
+              <span class="hint-text">独立后台进程，由托盘「停止服务」控制</span>
+            </div>
+            <span class="switch on locked"><span class="lever"></span></span>
+          </div>
+        </div>
+        <div class="row" style="align-items:center">
+          <div class="grow" style="display:flex; align-items:center; gap:12px">
+            <div class="grow">
+              <span class="f-label">开机自启</span>
+              <span class="hint-text">登录 Windows 后静默拉起并回连服务</span>
+            </div>
+            <span class="switch" id="autostartSwitch" role="switch"><span class="lever"></span></span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="grow">
+            <span class="f-label">网络代理 · 用于安装与更新下载</span>
+            <input class="well" id="proxyInput" placeholder="例如 127.0.0.1:7897">
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <footer class="note-line" id="footLine">DSH DOCK · 沐辉</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
