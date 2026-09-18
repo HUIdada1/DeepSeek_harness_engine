@@ -95,6 +95,11 @@ body {
 }
 .hw-btn:hover { color: var(--text-hi); border-color: var(--accent); }
 .hw-btn:active { transform: translateY(1px); }
+.hw-btn.filter.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-dim);
+}
 .hw-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .hw-btn:disabled:hover { border-color: var(--line); color: var(--text-mid); }
 .dot-badge {
@@ -193,6 +198,7 @@ main { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .spec { margin-top: 14px; border-top: 1px solid var(--line-soft); }
 .spec-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; border-bottom: 1px solid var(--line-soft); }
 .spec-row:last-child { border-bottom: none; }
+.spec-row[hidden] { display: none; } /* 作者 display:flex 会覆盖 UA 的 [hidden] */
 .spec-row .k { font-size: 10px; letter-spacing: 0.14em; color: var(--text-low); text-transform: uppercase; }
 .spec-row .v { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--text-mid); }
 .spec-row .v em { font-style: normal; color: var(--accent); }

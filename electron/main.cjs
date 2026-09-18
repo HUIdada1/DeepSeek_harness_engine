@@ -38,15 +38,15 @@ if (!app.requestSingleInstanceLock()) {
 app.on('before-quit', () => { quitting = true })
 
 app.on('window-all-closed', () => {
-  // 托盘常驻：仅 quitting 时真正退出
-  if (quitting) app.quit()
+  // tray/ask 模式下 close 已被 preventDefault，不会到达这里；到达即 exit 模式或测试模式
+  app.quit()
 })
 
 function broadcast(payload) {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('app:event', payload)
   }
-  refreshTray()
+  if (payload.type !== 'log') refreshTray() // 日志高频，托盘菜单只随状态重建
 }
 
 function showWindow() {
@@ -135,6 +135,8 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
   if (SMOKE) {
     mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -243,7 +245,6 @@ function quitWithAsk() {
 
 // ---- 开机自启：Task Scheduler 登录触发（比注册表 Run 项更可靠地覆盖便携版） ----
 function setAutostart(enabled) {
-  config.saveConfig({ autostart: enabled })
   const taskName = 'DSH Dock Autostart'
   if (!app.isPackaged) {
     broadcast({ type: 'log', level: 'warn', line: '[autostart] 开发模式不注册计划任务' })
@@ -252,11 +253,18 @@ function setAutostart(enabled) {
   const exe = process.execPath
   if (enabled) {
     execFile('schtasks.exe', ['/Create', '/F', '/SC', 'ONLOGON', '/TN', taskName, '/TR', '"' + exe + '"'], { windowsHide: true }, (error) => {
-      broadcast({ type: 'log', level: error ? 'err' : 'info', line: '[autostart] ' + (error ? '注册失败：' + error.message : '已注册登录启动计划任务') })
+      if (error) {
+        config.saveConfig({ autostart: false }) // 注册失败回滚，UI 与真实状态一致
+        broadcast({ type: 'log', level: 'err', line: '[autostart] 注册失败：' + error.message })
+      } else {
+        broadcast({ type: 'log', level: 'info', line: '[autostart] 已注册登录启动计划任务' })
+      }
+      refreshTray()
     })
   } else {
-    execFile('schtasks.exe', ['/Delete', '/F', '/TN', taskName], { windowsHide: true }, () => {
-      broadcast({ type: 'log', level: 'info', line: '[autostart] 已移除登录启动计划任务' })
+    execFile('schtasks.exe', ['/Delete', '/F', '/TN', taskName], { windowsHide: true }, (error) => {
+      broadcast({ type: 'log', level: error && error.code !== 1 ? 'err' : 'info', line: '[autostart] ' + (error && error.code !== 1 ? '移除失败：' + error.message : '已移除登录启动计划任务') })
+      refreshTray()
     })
   }
 }
@@ -310,10 +318,12 @@ function wireIpc() {
       project: detected,
     }
   })
+  const CONFIG_FIELDS = new Set(['projectDir', 'launchMode', 'node', 'proxy', 'closeBehavior', 'keepServiceOnClose', 'autostart', 'autoRestart', 'theme', 'update', 'recentProjects'])
   ipcMain.handle('config:set', (_event, patch) => {
-    const next = config.saveConfig(patch)
-    if (patch.autostart !== undefined) setAutostart(patch.autostart)
-    broadcast({ type: 'config-changed' })
+    const clean = Object.fromEntries(Object.entries(patch || {}).filter(([key]) => CONFIG_FIELDS.has(key)))
+    const next = config.saveConfig(clean)
+    if (clean.autostart !== undefined) setAutostart(clean.autostart)
+    broadcast({ type: 'config-changed', config: next })
     return next
   })
   ipcMain.handle('service:start', (_event, overrides) => startFromConfig(overrides || {}))

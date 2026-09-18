@@ -1,7 +1,8 @@
 // 服务管理：分离式后台进程（方案 A）
-// - spawn detached，stdio 全部写入日志文件；管理器退出不影响服务（结构解耦）
-// - 日志文件轮询读取：URL 解析 / UI 日志流 / 回连后恢复，三方共用一条路
-// - 状态机 stopped → starting → running → stopping → stopped；异常退出退避重启
+// - spawn detached，stdio ignore；输出由 cmd 内部重定向写日志文件，父进程不持句柄
+//   （分离进程的孙节点必然继承 cmd 打开的句柄，管理器生死不影响写入）
+// - 状态机 stopped → starting → running → stopping → stopped（degraded = 运行中但探测失败）
+// - 崩溃按 5s/15s/60s 退避自动重启，上限 autoRestart.maxRetries；健康恢复即清零计数
 'use strict'
 const { spawn, execFile } = require('node:child_process')
 const fs = require('node:fs')
@@ -16,11 +17,12 @@ const PROBE_FAIL_TOLERANCE = 3
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024
 const TAIL_POLL_MS = 500
 const RESTART_BACKOFF_MS = [5_000, 15_000, 60_000]
+const PORT_RELEASE_WAIT_MS = 8_000
 
 let emit = () => {}
-let dir = null // 数据目录
+let dir = null
 let status = 'stopped'
-let opts = null // 最近一次 start 的参数（重启/退避复用）
+let opts = null
 let child = null
 let logFile = null
 let logOffset = 0
@@ -30,8 +32,8 @@ let probeTimer = null
 let restartTimer = null
 let restartAttempts = 0
 let userStop = false
-let urlFoundAt = 0
 let probeFails = 0
+let adoptPromise = null
 
 const state = {
   pid: null,
@@ -76,8 +78,6 @@ function getStatus() {
 }
 
 // ---- 日志：轮转 + 追加 + 轮询读新行 ----
-// 子进程输出由 cmd 内部重定向写文件（`>>`），父进程不持有句柄：
-// 分离进程的孙节点（pnpm→node）必然继承 cmd 打开的句柄，管理器生死不影响写入
 function rotateIfNeeded() {
   try {
     const stat = fs.statSync(logPath())
@@ -113,8 +113,11 @@ function pollTail() {
     fs.readSync(fd, buffer, 0, buffer.length, logOffset)
     fs.closeSync(fd)
   } catch { return }
-  logOffset = stat.size
-  for (const raw of buffer.toString('utf8').split(/\r?\n/)) {
+  // 只消费到最后一个换行字节：半行/多字节字符留待下次，URL 行不会被劈开
+  const cut = buffer.lastIndexOf(0x0a)
+  if (cut === -1) return
+  logOffset += cut + 1
+  for (const raw of buffer.subarray(0, cut + 1).toString('utf8').split(/\r?\n/)) {
     const line = raw.trim()
     if (!line) continue
     emit({ type: 'log', line })
@@ -126,7 +129,6 @@ function pollTail() {
 }
 
 function startTailer() {
-  pollTail()
   if (!tailTimer) tailTimer = setInterval(pollTail, TAIL_POLL_MS)
 }
 function stopTailer() {
@@ -138,7 +140,6 @@ function onUrlFound(url) {
   if (status !== 'starting') return
   state.url = url
   try { state.port = Number(new URL(url).port) || 80 } catch { state.port = null }
-  urlFoundAt = Date.now()
   persistState()
   emit({ type: 'log', level: 'ok', line: '[state] URL 解析成功：' + url })
   startProbing()
@@ -163,11 +164,14 @@ function startProbing() {
     if (ok) {
       if (probeFails > 0) emit({ type: 'log', level: 'info', line: '[probe] 恢复 HTTP 响应' })
       probeFails = 0
-      if (status === 'starting') setStatus('running')
+      if (status === 'starting') {
+        restartAttempts = 0 // 健康恢复，重启计数归零
+        setStatus('running')
+      }
     } else {
       probeFails += 1
-      if (status === 'running' && probeFails === PROBE_FAIL_TOLERANCE) {
-        emit({ type: 'log', level: 'warn', line: '[probe] 连续 ' + PROBE_FAIL_TOLERANCE + ' 次探测失败，标记异常（服务进程仍在）' })
+      if (status === 'running' && probeFails >= PROBE_FAIL_TOLERANCE) {
+        emit({ type: 'log', level: 'warn', line: '[probe] 连续 ' + probeFails + ' 次探测失败，标记异常（服务进程仍在）' })
         setStatus('degraded')
       }
     }
@@ -181,6 +185,7 @@ function stopProbing() {
 function urlWaitGuard() {
   clearTimeout(urlTimer)
   urlTimer = setTimeout(async () => {
+    urlTimer = null
     if (status !== 'starting' || state.url) return
     // 30s 无 URL：回退探测默认端口（方案 6 #8）
     const fallback = 'http://127.0.0.1:' + FALLBACK_PORT + '/'
@@ -194,13 +199,31 @@ function urlWaitGuard() {
   }, URL_WAIT_MS)
 }
 
+// 终态统一收口：清定时器并如实置 stopped
+function markStopped() {
+  stopTailer()
+  stopProbing()
+  clearTimeout(urlTimer)
+  urlTimer = null
+  setStatus('stopped')
+}
+
 // ---- 启动 / 停止 ----
-async function start(startOpts) {
-  if (status === 'starting' || status === 'running') return getStatus()
+async function start(startOpts, options = {}) {
+  const { keepAttempts = false } = options
+  if (adoptPromise) await adoptPromise
+  if (status === 'starting' || status === 'running' || status === 'stopping') return getStatus()
+  if (status === 'degraded') {
+    // degraded = 旧进程还活着：先停掉，避免端口冲突与日志句柄占用
+    await stop('start-before-degraded')
+    if (status !== 'stopped') return getStatus()
+  }
   opts = { ...startOpts }
   userStop = false
-  restartAttempts = 0
-  cancelRestart()
+  cancelRestart(keepAttempts)
+  stopProbing()
+  stopTailer()
+  clearTimeout(urlTimer)
   setStatus('starting')
   state.url = ''
   state.port = null
@@ -208,36 +231,50 @@ async function start(startOpts) {
   state.mode = opts.mode
   state.projectDir = opts.projectDir
   state.nodeDir = opts.nodeDir || ''
-  rotateIfNeeded()
 
-  const env = require('./env.cjs').nodeEnv(opts.nodeDir)
-  delete env.__nodeVersionRaw
-  const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web' : 'pnpm dsh web'
-  emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + opts.projectDir + '）' })
-  appendDockLine('[dock] ---- DSH Dock 启动服务 ' + new Date().toISOString() + ' ----')
-  initTailOffset()
+  try {
+    rotateIfNeeded()
+    const env = require('./env.cjs').nodeEnv(opts.nodeDir)
+    const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web' : 'pnpm dsh web'
+    emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + opts.projectDir + '）' })
+    appendDockLine('[dock] ---- DSH Dock 启动服务 ' + new Date().toISOString() + ' ----')
+    initTailOffset()
 
-  // 由 cmd 执行重定向：所有子孙进程的 stdout/stderr 都落到日志文件
-  const command = baseCommand + ' >> "' + logPath() + '" 2>&1'
-  child = spawn('cmd.exe', ['/d', '/s', '/c', command], {
-    cwd: opts.projectDir,
-    env,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  })
-  child.unref()
-  state.pid = child.pid
-  persistState()
+    // 由 cmd 执行重定向：所有子孙进程的 stdout/stderr 都落到日志文件
+    const command = baseCommand + ' >> "' + logPath() + '" 2>&1'
+    child = spawn('cmd.exe', ['/d', '/s', '/c', command], {
+      cwd: opts.projectDir,
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.unref()
+    state.pid = child.pid
+    persistState()
 
-  child.once('exit', (code) => {
-    child = null
-    state.pid = null
-    if (userStop || status === 'stopping') return
-    appendDockLine('[dock] 服务进程异常退出 code=' + code + ' ' + new Date().toISOString())
-    emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + code + '），最近日志见上' })
-    maybeAutoRestart()
-  })
+    const self = child
+    const onDeath = (kind, detail) => {
+      if (child !== self) return // 已被新一轮 start/stop 接管
+      child = null
+      state.pid = null
+      if (userStop || status === 'stopping') return
+      if (kind === 'error') {
+        emit({ type: 'log', level: 'err', line: '[service] 进程启动失败：' + detail })
+      } else {
+        appendDockLine('[dock] 服务进程异常退出 code=' + detail + ' ' + new Date().toISOString())
+        emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + detail + '），最近日志见上' })
+      }
+      markStopped() // 如实反映进程已死，再进入退避
+      maybeAutoRestart()
+    }
+    self.once('error', (error) => onDeath('error', error && error.message ? error.message : String(error)))
+    self.once('exit', (code) => onDeath('exit', code))
+  } catch (error) {
+    emit({ type: 'log', level: 'err', line: '[start] 启动失败：' + (error && error.message ? error.message : String(error)) })
+    markStopped()
+    return getStatus()
+  }
 
   startTailer()
   urlWaitGuard()
@@ -273,35 +310,36 @@ function taskkillTree(pid) {
 async function stop(reason) {
   if (status === 'stopped') return getStatus()
   userStop = true
-  cancelRestart()
+  cancelRestart(false)
   setStatus('stopping')
   stopProbing()
+  stopTailer()
   clearTimeout(urlTimer)
+  urlTimer = null
 
   let pid = state.pid
   if (!pid || !pidAlive(pid)) {
     // 进程已不在，但端口可能仍被占（手启/孤儿）：按端口兜底
-    if (state.port) pid = await pidByPort(state.port)
+    pid = state.port ? await pidByPort(state.port) : null
   }
   if (pid && pidAlive(pid)) {
     emit({ type: 'log', level: 'info', line: '[action] 停止服务 · taskkill /T /F pid=' + pid + (reason ? '（' + reason + '）' : '') })
     await taskkillTree(pid)
-    // 等待端口真正释放，最多 8s
-    for (let i = 0; i < 16; i++) {
-      if (state.port && await probeOnce('http://127.0.0.1:' + state.port + '/')) {
-        await new Promise((r) => setTimeout(r, 500))
-      } else break
+    // 等待端口真正释放，总时长封顶 PORT_RELEASE_WAIT_MS
+    const deadline = Date.now() + PORT_RELEASE_WAIT_MS
+    while (state.port && Date.now() < deadline) {
+      if (!(await probeOnce('http://127.0.0.1:' + state.port + '/'))) break
+      await new Promise((resolve) => setTimeout(resolve, 500))
     }
   } else {
-    emit({ type: 'log', level: 'info', line: '[action] 服务已不在运行，清理状态' })
+    emit({ type: 'log', level: 'info', line: '[action] 服务已不在运行，清理状态' + (reason ? '（' + reason + '）' : '') })
   }
 
-  stopTailer()
   child = null
   state.pid = null
   state.url = ''
   state.port = null
-  setStatus('stopped')
+  markStopped()
   return getStatus()
 }
 
@@ -315,10 +353,9 @@ async function restart() {
 // ---- 退避自动重启（方案 6 #9）----
 function maybeAutoRestart() {
   const config = require('./config.cjs').getConfig()
-  if (!config.autoRestart.enabled) { setStatus('stopped'); return }
+  if (!config.autoRestart.enabled) return
   if (restartAttempts >= config.autoRestart.maxRetries) {
-    emit({ type: 'log', level: 'err', line: '[service] 自动重启已达上限（' + config.autoRestart.maxRetries + ' 次），转为停止' })
-    setStatus('stopped')
+    emit({ type: 'log', level: 'err', line: '[service] 自动重启已达上限（' + config.autoRestart.maxRetries + ' 次），保持停止' })
     return
   }
   const delay = RESTART_BACKOFF_MS[Math.min(restartAttempts, RESTART_BACKOFF_MS.length - 1)]
@@ -326,21 +363,17 @@ function maybeAutoRestart() {
   emit({ type: 'log', level: 'warn', line: '[service] ' + delay / 1000 + 's 后第 ' + restartAttempts + ' 次自动重启' })
   restartTimer = setTimeout(async () => {
     restartTimer = null
-    if (userStop || status === 'running' || status === 'starting') return
-    const previousStatus = status
-    status = 'stopped' // 允许 start 重新进入
-      stopTailer()
-    await start(opts)
-    if (previousStatus === 'degraded') setStatus('starting')
+    if (userStop || child) return
+    await start(opts, { keepAttempts: true })
   }, delay)
 }
-function cancelRestart() {
+function cancelRestart(keepAttempts = false) {
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null }
-  restartAttempts = 0
+  if (!keepAttempts) restartAttempts = 0
 }
 
 // ---- 回连（管理器重新打开 / 系统启动后恢复显示）----
-async function adoptOrphan() {
+async function doAdopt() {
   let disk = null
   try { disk = JSON.parse(fs.readFileSync(stateFile(), 'utf8')) } catch { disk = null }
   if (!disk || !disk.pid) {
@@ -353,35 +386,47 @@ async function adoptOrphan() {
     projectDir: disk.projectDir || '', nodeDir: disk.nodeDir || '',
   })
   opts = { projectDir: state.projectDir, mode: state.mode, nodeDir: state.nodeDir }
-
   logFile = logPath()
-  initTailOffset()
+
   const alive = pidAlive(state.pid)
   const portAlive = state.url ? await probeOnce(state.url) : false
   if (alive && portAlive) {
     emit({ type: 'log', level: 'ok', line: '[adopt] 收养运行中的服务 pid=' + state.pid + ' · ' + state.url })
+    initTailOffset()
     startTailer()
     startProbing()
     setStatus('running')
   } else if (alive) {
     emit({ type: 'log', level: 'info', line: '[adopt] 服务进程存活（pid=' + state.pid + '）但未就绪，继续等待 URL' })
+    initTailOffset()
     startTailer()
     setStatus('starting')
     urlWaitGuard()
     startProbing()
   } else if (portAlive) {
-    emit({ type: 'log', level: 'warn', line: '[adopt] 状态文件中的进程已死但端口仍存活（疑似手启），按端口收养' })
+    emit({ type: 'log', level: 'warn', line: '[adopt] 状态文件中的进程已死但端口仍存活，按端口收养' })
+    state.pid = await pidByPort(state.port)
+    persistState()
+    initTailOffset()
     startTailer()
     startProbing()
     setStatus('running')
   } else {
     emit({ type: 'log', level: 'info', line: '[adopt] 状态文件已过期（进程与端口均失效），清理' })
-      stopTailer()
     state.pid = null
     clearStateFile()
-    setStatus('stopped')
+    markStopped()
   }
   return getStatus()
+}
+function adoptOrphan() {
+  if (adoptPromise) return adoptPromise
+  adoptPromise = doAdopt().catch((error) => {
+    emit({ type: 'log', level: 'err', line: '[adopt] 收养失败：' + (error && error.message ? error.message : String(error)) })
+    try { clearStateFile() } catch { /* 状态文件本就可能不存在 */ }
+    markStopped()
+  })
+  return adoptPromise
 }
 
 function init(options) {

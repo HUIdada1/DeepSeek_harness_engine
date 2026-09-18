@@ -47,7 +47,7 @@ function appendLog(line, level) {
   div.className = 'log-line ' + resolved
   const safe = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   div.innerHTML = '<span class="t">' + stamp() + '</span>' + safe
-  if (resolved === 'ok' && /dsh web:\s*http/i.test(line)) {
+  if (/dsh web:\s*https?:\/\//i.test(line)) {
     div.innerHTML = div.innerHTML.replace(/(dsh web:\s*https?:\/\/\S+)/, '<span class="url">$1</span>')
   }
   const nearBottom = logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 60
@@ -100,10 +100,10 @@ function gaugeVisual(status) {
   } else if (status === 'running' || status === 'degraded') {
     $('#stateText').textContent = status === 'running' ? '运行中' : '异常'
     $('#actHint').textContent = '点击停止'
+    arc.style.transition = 'stroke-dashoffset 700ms cubic-bezier(0.32,0.72,0,1)'
+    arc.style.strokeDashoffset = '0'
   }
   setActions(status === 'running' || status === 'degraded')
-  $('#nodeLed').classList.toggle('off', status === 'stopped')
-  $('#projLed').classList.toggle('off', status === 'stopped')
 }
 function renderService(payload) {
   state.service = { ...state.service, ...payload }
@@ -174,7 +174,7 @@ function renderNode(info) {
   $('#nodePathInput').value = activePath
   const activeVersion = (configuredPath && state.config.node.version) || (current && current.version) || '--'
   $('#nodeBig').textContent = activeVersion
-  const satisfies = current ? current.satisfies : (state.config.node.version || '').length > 1
+  const satisfies = current ? current.satisfies : false
   $('#nodeFit').hidden = !satisfies
   $('#nodeBad').hidden = satisfies
   $('#nodeLed').classList.toggle('off', !satisfies)
@@ -217,7 +217,11 @@ function renderMode() {
   for (const btn of $$('#modeBank .lamp-btn')) {
     btn.classList.toggle('on', btn.dataset.mode === mode)
   }
-  $('#specMode').innerHTML = '<em>' + mode.toUpperCase() + '</em> ' + (mode === 'npm' ? 'npx @deepseek-ai/dsh web' : 'pnpm dsh web')
+  const specMode = $('#specMode')
+  specMode.textContent = ''
+  const em = document.createElement('em')
+  em.textContent = mode.toUpperCase()
+  specMode.append(em, ' ' + (mode === 'npm' ? 'npx @deepseek-ai/dsh web' : 'pnpm dsh web'))
 }
 for (const btn of $$('#modeBank .lamp-btn')) {
   btn.addEventListener('click', async () => {
@@ -274,6 +278,7 @@ function renderReadiness(r) {
     $('#rdBuild').textContent = r.buildOk ? 'dsh web --help ✓' : '需构建'
   }
   const allOk = r.nodeVersionOk && r.pnpmOk && r.depsInstalled && (state.config.launchMode === 'npm' || r.buildOk === true)
+  $('#projLed').classList.toggle('off', !allOk || state.initRunning)
   $('#initBtn').disabled = state.initRunning || allOk
   if (allOk && !state.initRunning) {
     $('#initFill').style.width = '100%'
@@ -352,7 +357,7 @@ $('#checkBtn').addEventListener('click', async () => {
   state.checkingCooldown = true
   const status = await window.dock.checkUpdate()
   renderUpdate(status)
-  setTimeout(() => { state.checkingCooldown = false }, 5000)
+  setTimeout(() => { state.checkingCooldown = false; renderUpdate(state.update) }, 30_000)
 })
 $('#dlBtn').addEventListener('click', () => window.dock.downloadUpdate())
 $('#installBtn').addEventListener('click', () => window.dock.installUpdate())
@@ -409,8 +414,8 @@ window.dock.onEvent((payload) => {
   } else if (payload.type === 'init-done') {
     scheduleReadiness()
   } else if (payload.type === 'config-changed') {
-    // 主进程侧改动（如托盘自启勾选）回灌
-    window.dock.getInit().then((init) => { state.config = init.config; renderConfig() })
+    // 主进程侧改动（如托盘自启勾选）回灌；事件直接携带新配置
+    if (payload.config) { state.config = payload.config; renderConfig() }
   }
 });
 
@@ -441,4 +446,4 @@ window.dock.onEvent((payload) => {
   }
   renderMode()
   scheduleReadiness()
-})()
+})().catch((error) => appendLog('[dock] 初始化失败：' + ((error && error.message) || error), 'err'))

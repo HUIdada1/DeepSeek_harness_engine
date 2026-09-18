@@ -59,6 +59,7 @@ function loadConfig() {
   let disk = {}
   try {
     disk = JSON.parse(fs.readFileSync(configFile(), 'utf8'))
+    if (disk === null || typeof disk !== 'object' || Array.isArray(disk)) disk = {} // 合法 JSON 但不是对象
   } catch (error) {
     if (error.code !== 'ENOENT') {
       // 配置损坏时重置为默认，不阻塞启动；旧文件保留为 .broken 供排查
@@ -77,9 +78,14 @@ function getConfig() {
 function saveConfig(patch) {
   const next = mergeDeep(getConfig(), patch)
   ensureDirs()
-  const tmp = configFile() + '.tmp'
+  const tmp = configFile() + '.' + process.pid + '.tmp'
   fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
-  fs.renameSync(tmp, configFile())
+  try {
+    fs.renameSync(tmp, configFile())
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* tmp 清理失败可忽略 */ }
+    throw error
+  }
   cached = next
   return next
 }
@@ -87,7 +93,8 @@ function saveConfig(patch) {
 // 最近项目去重记录，最多 8 条
 function rememberProject(dir) {
   if (!dir) return
-  const list = getConfig().recentProjects.filter((d) => d !== dir)
+  const existing = getConfig().recentProjects
+  const list = (Array.isArray(existing) ? existing : []).filter((d) => d !== dir)
   list.unshift(dir)
   saveConfig({ recentProjects: list.slice(0, 8) })
 }

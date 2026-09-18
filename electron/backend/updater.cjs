@@ -26,6 +26,7 @@ let onState = () => {}
 let status = idleStatus()
 let lastManualCheckAt = 0
 let installTriggered = false // quitAndInstall 会再触发一次 quit，防重入
+let installFallback = null // 杀软兜底定时器；真实 error 事件先到则撤下，避免覆盖原因
 let currentCheckIsManual = false
 let timer = null
 
@@ -277,7 +278,7 @@ function triggerInstall() {
   require('./config.cjs').saveConfig({ update: { notifiedVersion: '' } })
   autoUpdater.quitAndInstall(true, true)
   // 杀软拦截时 electron-updater 只发 error 不退出；10s 后还活着说明没走起来
-  setTimeout(() => {
+  installFallback = setTimeout(() => {
     if (installTriggered) {
       installTriggered = false
       onUpdateError(new Error('安装程序未能启动'))
@@ -304,7 +305,12 @@ function bindUpdaterEvents() {
     setState('downloaded', { percent: 100, message: '' })
     notify('新版本已就绪', '可在设置中心立即重启安装')
   })
-  autoUpdater.on('error', (error) => onUpdateError(error))
+  autoUpdater.on('error', (error) => {
+    // error 事件路径复位防重入标志并撤下兜底定时器，保留真实失败原因
+    installTriggered = false
+    if (installFallback) { clearTimeout(installFallback); installFallback = null }
+    onUpdateError(error)
+  })
 }
 
 function init(options) {

@@ -11,16 +11,25 @@ const NPM_MIRROR = 'https://registry.npmmirror.com'
 const ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
 
 function run(cmd, args, options = {}) {
+  // spawn + 手动超时：超时用 taskkill /T /F 杀整棵树（execFile 的 timeout 只杀第一层 cmd）
   return new Promise((resolve) => {
-    execFile(cmd, args, {
-      timeout: options.timeout ?? EXEC_TIMEOUT_MS,
-      windowsHide: true,
-      encoding: 'utf8',
-      cwd: options.cwd,
-      env: options.env,
-      maxBuffer: 4 * 1024 * 1024,
-    }, (error, stdout, stderr) => {
-      resolve({ code: error && error.code !== undefined ? Number(error.code) || 1 : 0, stdout: String(stdout || ''), stderr: String(stderr || ''), error })
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    const child = spawn(cmd, args, { windowsHide: true, cwd: options.cwd, env: options.env })
+    const timer = setTimeout(() => {
+      timedOut = true
+      if (child.pid) spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+    }, options.timeout ?? EXEC_TIMEOUT_MS)
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      resolve({ code: -1, stdout, stderr, error })
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve({ code: timedOut ? 124 : (code ?? -1), stdout, stderr, error: null })
     })
   })
 }
@@ -85,14 +94,17 @@ function candidateDirs() {
   push(process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'nodejs'), 'program-files')
   push(process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'nodejs'), 'program-files-x86')
   for (const item of nvmDirs()) out.push(item)
-  const fnmRoot = path.join(process.env.APPDATA || '', 'fnm', 'node-versions')
-  try {
-    for (const entry of fs.readdirSync(fnmRoot, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        push(path.join(fnmRoot, entry.name, 'installation'), 'fnm')
+  for (const base of [process.env.LOCALAPPDATA, process.env.APPDATA]) {
+    if (!base) continue
+    const fnmRoot = path.join(base, 'fnm', 'node-versions')
+    try {
+      for (const entry of fs.readdirSync(fnmRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          push(path.join(fnmRoot, entry.name, 'installation'), 'fnm')
+        }
       }
-    }
-  } catch { /* fnm 未安装 */ }
+    } catch { /* 该根不存在 */ }
+  }
   const voltaRoot = path.join(process.env.LOCALAPPDATA || '', 'Volta', 'tools', 'image', 'node')
   try {
     for (const entry of fs.readdirSync(voltaRoot, { withFileTypes: true })) {
@@ -129,8 +141,10 @@ async function detectNode() {
 async function detectPnpm(nodeDir) {
   const env = nodeEnv(nodeDir)
   const result = await runShell('pnpm -v', { env })
-  const version = result.code === 0 ? result.stdout.trim().split(/\r?\n/).pop() : ''
-  return { ok: result.code === 0 && /^\d+/.test(version), version }
+  const version = result.code === 0
+    ? (result.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => /^\d+(\.\d+)+/.test(line)) || '')
+    : ''
+  return { ok: Boolean(version), version }
 }
 
 // ---- 项目目录探测与校验 ----
@@ -189,8 +203,11 @@ async function checkReadiness({ projectDir, mode, nodeDir }) {
 function nodeEnv(nodeDir) {
   const env = { ...process.env }
   if (nodeDir) {
-    env.PATH = nodeDir + path.delimiter + (env.PATH || '')
-    env.Path = env.PATH
+    // Windows 环境块键名为 Path；先合并原值再删除旧键，避免 PATH/Path 双键互相覆盖
+    const currentPath = env.Path ?? env.PATH ?? ''
+    delete env.PATH
+    delete env.Path
+    env.Path = nodeDir + path.delimiter + currentPath
   }
   const config = require('./config.cjs').getConfig()
   const proxy = config.proxy
@@ -202,7 +219,6 @@ function nodeEnv(nodeDir) {
   }
   // deepseek-harness 依赖树内含 Electron / 原生包，安装时走镜像防被墙
   env.ELECTRON_MIRROR = ELECTRON_MIRROR
-  env.__nodeVersionRaw = ''
   return env
 }
 
@@ -212,7 +228,8 @@ function spawnStream(command, cwd, env, timeoutMs, onLine) {
   return new Promise((resolve) => {
     const child = spawn('cmd.exe', ['/d', '/s', '/c', command], { cwd, env, windowsHide: true })
     let timer = setTimeout(() => {
-      try { child.kill() } catch { /* 已退出 */ }
+      // 超时杀整棵树：child.kill() 只能杀 cmd.exe 第一层，pnpm/node 孙进程会变孤儿
+      if (child.pid) spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
       resolve({ code: 124, timedOut: true })
     }, timeoutMs)
     const feed = (chunk) => {
@@ -236,7 +253,6 @@ function spawnStream(command, cwd, env, timeoutMs, onLine) {
 
 async function runInit({ projectDir, mode, nodeDir, onStep, onLine }) {
   const env = nodeEnv(nodeDir)
-  env.__nodeVersionRaw = ''
   const steps = []
   const fail = (step, code) => ({ ok: false, failedStep: step, code, steps })
 
@@ -253,6 +269,9 @@ async function runInit({ projectDir, mode, nodeDir, onStep, onLine }) {
   } else {
     onLine('[init] 检测到 pnpm ' + pnpm.version)
   }
+  const verify = await detectPnpm(nodeDir)
+  if (!verify.ok) return fail('pnpm', 1)
+  onLine('[init] pnpm 就绪：' + verify.version)
   steps.push('pnpm')
 
   if (mode === 'source') {
