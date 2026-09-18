@@ -1,0 +1,73 @@
+{
+  "name": "dsh-dock",
+  "version": "0.1.0",
+  "description": "DSH Dock 引擎坞：deepseek-harness 可视化启动管理器（启停 / 环境自愈 / 托盘常驻 / 热更新）",
+  "author": "沐辉",
+  "license": "MIT",
+  "homepage": "https://github.com/HUIdada1/DeepSeek_harness_engine#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HUIdada1/DeepSeek_harness_engine.git"
+  },
+  "type": "commonjs",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "gen:icons": "node tools/gen-icons.cjs",
+    "dist": "electron-builder --win nsis portable",
+    "release": "electron-builder --win nsis portable --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.huidada1.dshdock",
+    "productName": "DSH Dock",
+    "copyright": "Copyright © 2026 沐辉",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "HUIdada1",
+        "repo": "DeepSeek_harness_engine",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "src/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "build/icon.png"
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DSH Dock"
+    },
+    "portable": {
+      "artifactName": "DSH-Dock-${version}-portable.exe"
+    }
+  }
+}
