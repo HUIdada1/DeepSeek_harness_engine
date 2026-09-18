@@ -141,6 +141,7 @@ function stopUptime() {
 }
 
 gaugeBtn.addEventListener('click', async () => {
+  if (!state.config) return // boot 未完成时不响应
   const status = state.service.status
   if (status === 'starting' || status === 'stopping') return
   if (status === 'running' || status === 'degraded') {
@@ -209,6 +210,8 @@ $('#detectNodeBtn').addEventListener('click', async () => {
 $('#nodePathInput').addEventListener('change', async () => {
   const value = $('#nodePathInput').value.trim()
   await setConfig({ node: { path: value, version: state.config.node.version } })
+  if (state.nodeInfo) renderNode(state.nodeInfo)
+  scheduleReadiness()
 })
 
 // ---------- 项目 ----------
@@ -248,7 +251,9 @@ async function checkReadiness() {
   const projectDir = $('#projPathInput').value.trim()
   if (!projectDir) return
   const mode = state.config.launchMode || 'source'
-  const nodeDir = state.config.node && state.config.node.path ? state.config.node.path.replace(/[\\/][^\\/]*$/, '') : ''
+  const rawPath = (state.config.node && state.config.node.path) || ''
+  const trimmed = rawPath.replace(/[\\/]+$/, '')
+  const nodeDir = /node\.exe$/i.test(trimmed) ? trimmed.replace(/[\\/][^\\/]*$/, '') : trimmed
   const readiness = await window.dock.readiness({ projectDir, mode, nodeDir })
   renderReadiness(readiness)
 }
@@ -292,18 +297,23 @@ function renderReadiness(r) {
 }
 
 $('#initBtn').addEventListener('click', async () => {
-  if (state.initRunning) return
+  if (state.initRunning || !state.config) return
   state.initRunning = true
   $('#initBtn').disabled = true
-  const projectDir = $('#projPathInput').value.trim()
-  const result = await window.dock.runInit({ projectDir, mode: state.config.launchMode || 'source' })
-  state.initRunning = false
-  if (!result || !result.ok) {
-    appendLog('[init] 初始化失败' + (result && result.failedStep ? '于步骤 ' + result.failedStep : ''), 'err')
-  } else {
-    appendLog('[init] 一键初始化全部完成', 'ok')
+  try {
+    const projectDir = $('#projPathInput').value.trim()
+    const result = await window.dock.runInit({ projectDir, mode: state.config.launchMode || 'source' })
+    if (!result || !result.ok) {
+      appendLog('[init] 初始化失败' + (result && result.failedStep ? '于步骤 ' + result.failedStep : ''), 'err')
+    } else {
+      appendLog('[init] 一键初始化全部完成', 'ok')
+    }
+  } catch (error) {
+    appendLog('[init] 初始化异常：' + ((error && error.message) || error), 'err')
+  } finally {
+    state.initRunning = false
+    scheduleReadiness()
   }
-  scheduleReadiness()
 })
 
 // ---------- 日志工具条 ----------
@@ -347,7 +357,7 @@ function renderUpdate(update) {
   const showMeter = update.phase === 'downloading'
   $('#dlMeter').hidden = !showMeter
   if (showMeter) $('#dlFill').style.width = (update.percent || 0) + '%'
-  $('#dlBtn').disabled = update.phase !== 'available'
+  $('#dlBtn').disabled = update.phase !== 'available' || Boolean(update.isPortable) // 便携版不能应用内更新
   $('#installBtn').disabled = update.phase !== 'downloaded'
   $('#checkBtn').disabled = state.checkingCooldown || update.phase === 'checking' || update.phase === 'downloading'
   if (update.message) $('#updateStateText').textContent += '（' + update.message + '）'
@@ -433,6 +443,7 @@ window.dock.onEvent((payload) => {
   appendLog('[dock] DSH Dock v' + init.version + ' 已启动' + (init.isPackaged ? '' : '（开发模式）'), 'info')
 
   const nodeInfo = await window.dock.detectNode()
+  state.nodeInfo = nodeInfo
   if (!state.config.node.path && nodeInfo.current) {
     state.config = await window.dock.setConfig({ node: { path: nodeInfo.current.path, version: nodeInfo.current.version } })
   }

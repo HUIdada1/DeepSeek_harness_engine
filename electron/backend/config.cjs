@@ -94,7 +94,7 @@ function saveConfig(patch) {
 function rememberProject(dir) {
   if (!dir) return
   const existing = getConfig().recentProjects
-  const list = (Array.isArray(existing) ? existing : []).filter((d) => d !== dir)
+  const list = (Array.isArray(existing) ? existing : []).filter((d) => String(d).toLowerCase() !== String(dir).toLowerCase())
   list.unshift(dir)
   saveConfig({ recentProjects: list.slice(0, 8) })
 }

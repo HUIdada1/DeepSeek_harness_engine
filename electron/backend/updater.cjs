@@ -105,13 +105,18 @@ function mirrorFallbackEnabled() {
 }
 
 function compareVersions(a, b) {
-  const parse = (v) => String(v || '').replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  // prerelease（-alpha/-rc 等）视为小于同号正式版
+  const parse = (v) => {
+    const [core, pre] = String(v || '').replace(/^v/, '').split('-')
+    return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre: pre || '' }
+  }
   const pa = parse(a)
   const pb = parse(b)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0)
+  for (let i = 0; i < Math.max(pa.nums.length, pb.nums.length); i++) {
+    const diff = (pa.nums[i] || 0) - (pb.nums[i] || 0)
     if (diff !== 0) return diff
   }
+  if (pa.pre !== pb.pre) return pa.pre ? -1 : 1
   return 0
 }
 
@@ -324,10 +329,11 @@ function init(options) {
   }
   if (app.isPackaged) {
     timer = setTimeout(function tick() {
+      // 先重排定时器：check 同步异常不中断后续自动检测
+      timer = setTimeout(tick, intervalMs())
       if (autoCheckEnabled() && status.phase !== 'downloading' && status.phase !== 'downloaded') {
         check(false)
       }
-      timer = setTimeout(tick, intervalMs())
     }, FIRST_CHECK_DELAY_MS)
   }
 }

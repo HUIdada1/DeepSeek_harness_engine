@@ -60,8 +60,7 @@ function onReady() {
   service.init({
     dataDir: config.appDataDir(),
     onEvent: (payload) => {
-      broadcast(payload)
-      if (payload.type === 'service') refreshTray()
+      broadcast(payload) // 非 log 事件内部已刷新托盘
     },
   })
   createWindow()
@@ -173,7 +172,7 @@ function createWindow() {
         if (response === 2) return
         if (checkboxChecked) {
           config.saveConfig({ closeBehavior: response === 0 ? 'tray' : 'exit' })
-          broadcast({ type: 'config-changed' })
+          broadcast({ type: 'config-changed', config: config.getConfig() })
         }
         if (response === 0) mainWindow.hide()
         else app.quit()
@@ -255,6 +254,7 @@ function setAutostart(enabled) {
     execFile('schtasks.exe', ['/Create', '/F', '/SC', 'ONLOGON', '/TN', taskName, '/TR', '"' + exe + '"'], { windowsHide: true }, (error) => {
       if (error) {
         config.saveConfig({ autostart: false }) // 注册失败回滚，UI 与真实状态一致
+        broadcast({ type: 'config-changed', config: config.getConfig() })
         broadcast({ type: 'log', level: 'err', line: '[autostart] 注册失败：' + error.message })
       } else {
         broadcast({ type: 'log', level: 'info', line: '[autostart] 已注册登录启动计划任务' })
@@ -321,6 +321,9 @@ function wireIpc() {
   const CONFIG_FIELDS = new Set(['projectDir', 'launchMode', 'node', 'proxy', 'closeBehavior', 'keepServiceOnClose', 'autostart', 'autoRestart', 'theme', 'update', 'recentProjects'])
   ipcMain.handle('config:set', (_event, patch) => {
     const clean = Object.fromEntries(Object.entries(patch || {}).filter(([key]) => CONFIG_FIELDS.has(key)))
+    for (const boolField of ['autostart', 'keepServiceOnClose']) {
+      if (clean[boolField] !== undefined) clean[boolField] = clean[boolField] === true
+    }
     const next = config.saveConfig(clean)
     if (clean.autostart !== undefined) setAutostart(clean.autostart)
     broadcast({ type: 'config-changed', config: next })
@@ -333,6 +336,9 @@ function wireIpc() {
   ipcMain.handle('env:detectProject', (_event, dir) => env.detectProject(dir))
   ipcMain.handle('env:readiness', async (_event, payload) => env.checkReadiness(payload))
   ipcMain.handle('init:run', async (event, payload) => {
+    if (!env.validateProjectDir(payload.projectDir)) {
+      return { ok: false, failedStep: 'project', code: -1 }
+    }
     const configData = config.getConfig()
     let nodeDir = configData.node.path ? path.dirname(configData.node.path) : ''
     const onLine = (line) => {
@@ -346,13 +352,18 @@ function wireIpc() {
     return result
   })
   ipcMain.handle('dialog:pickDir', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+    const options = { properties: ['openDirectory'] }
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
     return result.canceled ? null : result.filePaths[0]
   })
   ipcMain.handle('log:export', async () => {
-    const result = await dialog.showSaveDialog(mainWindow, {
-      defaultPath: 'dsh-web-' + new Date().toISOString().slice(0, 10) + '.log',
-    })
+    if (!fs.existsSync(service.logPath())) return null
+    const options = { defaultPath: 'dsh-web-' + new Date().toISOString().slice(0, 10) + '.log' }
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options)
     if (result.canceled || !result.filePath) return null
     fs.copyFileSync(service.logPath(), result.filePath)
     return result.filePath

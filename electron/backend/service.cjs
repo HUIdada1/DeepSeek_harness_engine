@@ -158,22 +158,48 @@ function probeOnce(url) {
 
 function startProbing() {
   if (probeTimer) return
+  let probing = false // 防止 async 回调重叠导致 probeFails 多计
   probeTimer = setInterval(async () => {
-    if (!state.url) return
-    const ok = await probeOnce(state.url)
-    if (ok) {
-      if (probeFails > 0) emit({ type: 'log', level: 'info', line: '[probe] 恢复 HTTP 响应' })
-      probeFails = 0
-      if (status === 'starting') {
-        restartAttempts = 0 // 健康恢复，重启计数归零
-        setStatus('running')
+    if (probing) return
+    probing = true
+    try {
+      if (!state.url) {
+        // 收养态无 URL 可探测：以 pid 存活兜底，死亡即收口
+        if (!child && state.pid && !pidAlive(state.pid)) {
+          emit({ type: 'log', level: 'err', line: '[probe] 收养的进程已退出（pid=' + state.pid + '）' })
+          state.pid = null
+          markStopped()
+        }
+        return
       }
-    } else {
-      probeFails += 1
-      if (status === 'running' && probeFails >= PROBE_FAIL_TOLERANCE) {
-        emit({ type: 'log', level: 'warn', line: '[probe] 连续 ' + probeFails + ' 次探测失败，标记异常（服务进程仍在）' })
-        setStatus('degraded')
+      const ok = await probeOnce(state.url)
+      if (ok) {
+        if (probeFails > 0) emit({ type: 'log', level: 'info', line: '[probe] 恢复 HTTP 响应' })
+        probeFails = 0
+        if (status === 'starting' || status === 'degraded') {
+          if (status === 'starting') restartAttempts = 0 // 健康恢复，重启计数归零
+          setStatus('running')
+        }
+      } else {
+        probeFails += 1
+        const adoptedDead = !child && state.pid && !pidAlive(state.pid)
+        if (status === 'starting' && adoptedDead && probeFails >= PROBE_FAIL_TOLERANCE) {
+          emit({ type: 'log', level: 'err', line: '[probe] 收养的启动中进程已死亡，停止等待' })
+          state.pid = null
+          markStopped()
+          return
+        }
+        if (status === 'running' && probeFails >= PROBE_FAIL_TOLERANCE) {
+          emit({ type: 'log', level: 'warn', line: '[probe] 连续 ' + probeFails + ' 次探测失败，标记异常（服务进程仍在）' })
+          setStatus('degraded')
+          if (adoptedDead) {
+            state.pid = null
+            markStopped()
+          }
+        }
       }
+    } finally {
+      probing = false
     }
   }, PROBE_INTERVAL_MS)
 }
@@ -224,6 +250,7 @@ async function start(startOpts, options = {}) {
   stopProbing()
   stopTailer()
   clearTimeout(urlTimer)
+  urlTimer = null
   setStatus('starting')
   state.url = ''
   state.port = null
@@ -233,7 +260,11 @@ async function start(startOpts, options = {}) {
   state.nodeDir = opts.nodeDir || ''
 
   try {
-    rotateIfNeeded()
+    try {
+      rotateIfNeeded()
+    } catch (rotateError) {
+      emit({ type: 'log', level: 'warn', line: '[log] 轮转失败（可能有进程仍持有日志句柄），继续追加：' + (rotateError.message || rotateError) })
+    }
     const env = require('./env.cjs').nodeEnv(opts.nodeDir)
     const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web' : 'pnpm dsh web'
     emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + opts.projectDir + '）' })
@@ -258,13 +289,17 @@ async function start(startOpts, options = {}) {
       if (child !== self) return // 已被新一轮 start/stop 接管
       child = null
       state.pid = null
+      state.url = ''
+      state.port = null
       if (userStop || status === 'stopping') return
-      if (kind === 'error') {
-        emit({ type: 'log', level: 'err', line: '[service] 进程启动失败：' + detail })
-      } else {
-        appendDockLine('[dock] 服务进程异常退出 code=' + detail + ' ' + new Date().toISOString())
-        emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + detail + '），最近日志见上' })
-      }
+      try {
+        if (kind === 'error') {
+          emit({ type: 'log', level: 'err', line: '[service] 进程启动失败：' + detail })
+        } else {
+          appendDockLine('[dock] 服务进程异常退出 code=' + detail + ' ' + new Date().toISOString())
+          emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + detail + '），最近日志见上' })
+        }
+      } catch { /* 日志写入失败不阻塞状态收口 */ }
       markStopped() // 如实反映进程已死，再进入退避
       maybeAutoRestart()
     }
@@ -303,14 +338,18 @@ function pidByPort(port) {
 
 function taskkillTree(pid) {
   return new Promise((resolve) => {
-    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 15_000 }, () => resolve())
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 15_000 }, (error) => {
+      if (error) emit({ type: 'log', level: 'warn', line: '[action] taskkill 失败（' + (error.message || error) + '），进程可能仍存活' })
+      resolve()
+    })
   })
 }
 
 async function stop(reason) {
-  if (status === 'stopped') return getStatus()
-  userStop = true
+  userStop = true // 必须先于守卫：退避窗口（stopped 态）也要拦住挂起的自动重启
   cancelRestart(false)
+  if (adoptPromise) await adoptPromise
+  if (status === 'stopped') return getStatus()
   setStatus('stopping')
   stopProbing()
   stopTailer()
@@ -406,6 +445,11 @@ async function doAdopt() {
   } else if (portAlive) {
     emit({ type: 'log', level: 'warn', line: '[adopt] 状态文件中的进程已死但端口仍存活，按端口收养' })
     state.pid = await pidByPort(state.port)
+    if (!state.pid) {
+      emit({ type: 'log', level: 'err', line: '[adopt] 无法定位占用端口的进程，放弃收养' })
+      markStopped()
+      return getStatus()
+    }
     persistState()
     initTailOffset()
     startTailer()

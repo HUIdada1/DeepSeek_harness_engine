@@ -19,10 +19,14 @@ function run(cmd, args, options = {}) {
     const child = spawn(cmd, args, { windowsHide: true, cwd: options.cwd, env: options.env })
     const timer = setTimeout(() => {
       timedOut = true
-      if (child.pid) spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+      if (child.pid) {
+        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+        killer.once('error', () => {}) // 杀树失败不挂起 Promise
+      }
     }, options.timeout ?? EXEC_TIMEOUT_MS)
-    child.stdout.on('data', (chunk) => { stdout += chunk })
-    child.stderr.on('data', (chunk) => { stderr += chunk })
+    const CAP = 1024 * 1024 // 输出上限，异常刷屏不膨胀内存
+    child.stdout.on('data', (chunk) => { if (stdout.length < CAP) stdout += chunk })
+    child.stderr.on('data', (chunk) => { if (stderr.length < CAP) stderr += chunk })
     child.once('error', (error) => {
       clearTimeout(timer)
       resolve({ code: -1, stdout, stderr, error })

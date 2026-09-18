@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('dock', {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   openReleases: () => ipcRenderer.invoke('update:openReleases'),
   onEvent: (callback) => {
-    ipcRenderer.on('app:event', (_event, payload) => callback(payload))
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('app:event', handler)
+    return () => ipcRenderer.removeListener('app:event', handler)
   },
 })
