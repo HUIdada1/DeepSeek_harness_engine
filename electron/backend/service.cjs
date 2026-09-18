@@ -18,6 +18,8 @@ const LOG_ROTATE_BYTES = 5 * 1024 * 1024
 const TAIL_POLL_MS = 500
 const RESTART_BACKOFF_MS = [5_000, 15_000, 60_000]
 const PORT_RELEASE_WAIT_MS = 8_000
+const ADOPT_GIVEUP_MS = 90_000 // 收养态无 URL 的最长等待（pid 复用后 pidAlive 恒真，只能靠时间收口）
+const ADOPT_FAIL_PROBES = 12 // 收养态有 URL 但持续探测失败的上限（12 × 5s）
 
 let emit = () => {}
 let dir = null
@@ -26,6 +28,7 @@ let opts = null
 let child = null
 let logFile = null
 let logOffset = 0
+let tailPrimed = false // initTailOffset 已执行过，markStopped 才允许排干尾巴
 let tailTimer = null
 let urlTimer = null
 let probeTimer = null
@@ -98,9 +101,10 @@ function initTailOffset() {
   } catch {
     logOffset = 0
   }
+  tailPrimed = true
 }
 
-function pollTail() {
+function pollTail(silent = false) {
   if (!logFile) return
   let stat
   try { stat = fs.statSync(logFile) } catch { return }
@@ -122,14 +126,14 @@ function pollTail() {
     if (!line) continue
     emit({ type: 'log', line })
     const match = line.match(URL_RE)
-    if (match && !state.url) {
+    if (match && !state.url && !silent) {
       onUrlFound(match[1])
     }
   }
 }
 
 function startTailer() {
-  if (!tailTimer) tailTimer = setInterval(pollTail, TAIL_POLL_MS)
+  if (!tailTimer) tailTimer = setInterval(() => pollTail(false), TAIL_POLL_MS)
 }
 function stopTailer() {
   if (tailTimer) { clearInterval(tailTimer); tailTimer = null }
@@ -164,11 +168,14 @@ function startProbing() {
     probing = true
     try {
       if (!state.url) {
-        // 收养态无 URL 可探测：以 pid 存活兜底，死亡即收口
-        if (!child && state.pid && !pidAlive(state.pid)) {
-          emit({ type: 'log', level: 'err', line: '[probe] 收养的进程已退出（pid=' + state.pid + '）' })
-          state.pid = null
-          markStopped()
+        // 收养态无 URL 可探测：以 pid 存活兜底，死亡或超时即收口
+        if (!child && state.pid) {
+          const expired = Date.now() - state.startedAt > ADOPT_GIVEUP_MS
+          if (expired || !pidAlive(state.pid)) {
+            emit({ type: 'log', level: 'err', line: '[probe] ' + (expired ? '收养进程超时未输出 URL，放弃等待' : '收养的进程已退出（pid=' + state.pid + '）') })
+            state.pid = null
+            markStopped()
+          }
         }
         return
       }
@@ -185,6 +192,12 @@ function startProbing() {
         const adoptedDead = !child && state.pid && !pidAlive(state.pid)
         if (status === 'starting' && adoptedDead && probeFails >= PROBE_FAIL_TOLERANCE) {
           emit({ type: 'log', level: 'err', line: '[probe] 收养的启动中进程已死亡，停止等待' })
+          state.pid = null
+          markStopped()
+          return
+        }
+        if (status === 'starting' && !child && probeFails >= ADOPT_FAIL_PROBES) {
+          emit({ type: 'log', level: 'err', line: '[probe] 收养进程持续无响应，放弃收养' })
           state.pid = null
           markStopped()
           return
@@ -227,6 +240,7 @@ function urlWaitGuard() {
 
 // 终态统一收口：清定时器并如实置 stopped
 function markStopped() {
+  if (tailPrimed) pollTail(true) // 排干最后一次轮询之后落盘的输出：崩溃原因常落在 500ms 轮询间隔内
   stopTailer()
   stopProbing()
   clearTimeout(urlTimer)
@@ -267,20 +281,46 @@ async function start(startOpts, options = {}) {
     }
     const env = require('./env.cjs').nodeEnv(opts.nodeDir)
     const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web' : 'pnpm dsh web'
-    emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + opts.projectDir + '）' })
+    // npm 模式跑的是 registry 发布包，与本地项目无关；且 npx 在 pnpm workspace 根目录
+    // 下会被本地 node_modules 结构干扰而找不到 bin（实测 'dsh' 不是内部或外部命令），
+    // 固定用 Dock 数据目录作 cwd
+    const spawnCwd = opts.mode === 'npm' ? require('./config.cjs').appDataDir() : opts.projectDir
+    emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + spawnCwd + '）' })
     appendDockLine('[dock] ---- DSH Dock 启动服务 ' + new Date().toISOString() + ' ----')
     initTailOffset()
 
-    // 由 cmd 执行重定向：所有子孙进程的 stdout/stderr 都落到日志文件
-    const command = baseCommand + ' >> "' + logPath() + '" 2>&1'
-    child = spawn('cmd.exe', ['/d', '/s', '/c', command], {
-      cwd: opts.projectDir,
-      env,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    })
-    child.unref()
+    // node.exe 直跑 pnpm/npx 的 CLI 入口，stdio 传日志句柄（spawn 同步返回后父进程即关
+    // 句柄，子进程树持有继承句柄，管理器生死不影响写入）。不能经 detached 的 cmd 重定向：
+    // 1) Node 默认参数转义会把重定向命令里的 " 变 \"，cmd /s 剥外层引号后重定向目标成
+    //    非法路径，进程立即 code=1 退出且日志无输出
+    // 2) 即使引号转义正确，DETACHED_PROCESS 的 cmd 启动外部命令时也不传任何 stdio，
+    //    pnpm/node 的输出全部丢失，URL 无法解析
+    const entry = require('./env.cjs').resolveSpawnEntry(opts.nodeDir, opts.mode)
+    let spawnFile
+    let spawnArgs
+    let logFd = null
+    if (entry) {
+      spawnFile = entry.exe
+      spawnArgs = entry.args
+    } else {
+      emit({ type: 'log', level: 'warn', line: '[spawn] 未定位到 node CLI 入口，回退 cmd 重定向（该模式下进程输出无法写日志，仅靠端口探测兜底）' })
+      spawnFile = 'cmd.exe'
+      spawnArgs = ['/d', '/s', '/c', baseCommand + ' >> "' + logPath() + '" 2>&1']
+    }
+    try {
+      if (entry) logFd = fs.openSync(logPath(), 'a')
+      child = spawn(spawnFile, spawnArgs, {
+        cwd: spawnCwd,
+        env,
+        detached: true,
+        stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
+        windowsHide: true,
+        windowsVerbatimArguments: !entry, // cmd 重定向命令含引号路径，禁止 Node 转义
+      })
+      child.unref()
+    } finally {
+      if (logFd !== null) { try { fs.closeSync(logFd) } catch { /* 句柄可能已随错误释放 */ } }
+    }
     state.pid = child.pid
     persistState()
 
@@ -349,7 +389,8 @@ async function stop(reason) {
   userStop = true // 必须先于守卫：退避窗口（stopped 态）也要拦住挂起的自动重启
   cancelRestart(false)
   if (adoptPromise) await adoptPromise
-  if (status === 'stopped') return getStatus()
+  // stopping 期重入直接返回：并发 stop 会重复 taskkill 同一棵进程树
+  if (status === 'stopped' || status === 'stopping') return getStatus()
   setStatus('stopping')
   stopProbing()
   stopTailer()
@@ -386,6 +427,7 @@ async function restart() {
   if (!opts) return getStatus()
   emit({ type: 'log', level: 'warn', line: '[action] 收到重启指令，优雅停止旧进程后重新拉起' })
   await stop('restart')
+  if (status !== 'stopped') return getStatus() // 与并发停止撞车时放弃本次重启，等用户再次触发
   return start(opts)
 }
 

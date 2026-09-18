@@ -15,6 +15,7 @@
     "dev": "electron .",
     "start": "electron .",
     "gen:icons": "node tools/gen-icons.cjs",
+    "test": "node --test \"tests/**/*.test.cjs\"",
     "dist": "electron-builder --win nsis portable",
     "release": "electron-builder --win nsis portable --publish always"
   },

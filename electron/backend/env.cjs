@@ -203,6 +203,28 @@ async function checkReadiness({ projectDir, mode, nodeDir }) {
   return { depsInstalled, git, pnpmOk: pnpm.ok, pnpmVersion: pnpm.version, buildOk, nodeVersionOk }
 }
 
+// ---- 服务启动入口定位 ----
+// 定位 pnpm / npx 的 node CLI 入口，让 service 以 node.exe 直跑它们。
+// 不能经 detached 的 cmd 启动：DETACHED_PROCESS 下 cmd 启动外部命令时不传任何
+// stdio，输出无法落盘（内建 echo 可以，node/pnpm 不行）；node.exe 由 CreateProcess
+// 的 STARTUPINFO 直接拿到日志句柄，pnpm→dsh 的子进程链再正常继承。
+function resolveSpawnEntry(nodeDir, mode) {
+  if (!nodeDir) return null
+  const exe = path.join(nodeDir, 'node.exe')
+  const script = mode === 'npm'
+    ? path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    : path.join(nodeDir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+  try {
+    if (!fs.statSync(exe).isFile() || !fs.statSync(script).isFile()) return null
+  } catch {
+    return null
+  }
+  const args = mode === 'npm'
+    ? [script, '-y', '@deepseek-ai/dsh', 'web']
+    : [script, 'dsh', 'web']
+  return { exe, args }
+}
+
 // 构造注入了 Node 目录与代理的子进程环境
 function nodeEnv(nodeDir) {
   const env = { ...process.env }
@@ -223,6 +245,8 @@ function nodeEnv(nodeDir) {
   }
   // deepseek-harness 依赖树内含 Electron / 原生包，安装时走镜像防被墙
   env.ELECTRON_MIRROR = ELECTRON_MIRROR
+  // npx 启动服务时要查 registry 解析最新版本；用户未自配源时兜底国内镜像，防官方源超时
+  if (!env.npm_config_registry && !env.NPM_CONFIG_REGISTRY) env.npm_config_registry = NPM_MIRROR
   return env
 }
 
@@ -299,5 +323,5 @@ async function runInit({ projectDir, mode, nodeDir, onStep, onLine }) {
 module.exports = {
   run, runShell, parseVersion, satisfiesEngines, compareVersions,
   detectNode, detectPnpm, detectProject, validateProjectDir, checkReadiness,
-  nodeEnv, runInit,
+  nodeEnv, resolveSpawnEntry, runInit,
 }
