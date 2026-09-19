@@ -329,7 +329,6 @@ async function start(startOpts, options = {}) {
       child = spawn(spawnFile, spawnArgs, {
         cwd: spawnCwd,
         env,
-        detached: true,
         stdio: entry ? ['ignore', logFd, logFd] : 'ignore',
         windowsHide: true,
       })

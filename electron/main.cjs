@@ -133,11 +133,11 @@ function createWindow() {
   // 原生标题栏颜色随应用主题（不设置时 Windows 永远是系统色，暗色主题下外框发白）
   nativeTheme.themeSource = configData.theme === 'light' ? 'light' : 'dark'
   mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 940,
-    minWidth: 940,
-    minHeight: 700,
-    backgroundColor: configData.theme === 'light' ? '#e7e9ed' : '#0a0c10',
+    width: 960,
+    height: 725,
+    minWidth: 760,
+    minHeight: 600,
+    backgroundColor: configData.theme === 'light' ? '#f3f4f8' : '#0b0c10',
     autoHideMenuBar: true,
     show: false,
     skipTaskbar: HEADLESS,

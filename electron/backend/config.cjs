@@ -30,7 +30,7 @@ function defaults() {
     keepServiceOnClose: true, // 方案 A 结构性恒真，仅用于 UI 展示
     autostart: false,
     autoRestart: { enabled: true, maxRetries: 3 },
-    theme: 'dark',
+    theme: 'light',
     update: {
       autoCheck: true,
       intervalHours: 1,
