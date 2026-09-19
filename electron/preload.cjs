@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('dock', {
   exportLog: () => ipcRenderer.invoke('log:export'),
   openLogFolder: () => ipcRenderer.invoke('log:openFolder'),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
+  openService: (url) => ipcRenderer.invoke('service:openWindow', url),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),

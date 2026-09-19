@@ -208,6 +208,15 @@
             <span class="switch" id="autostartSwitch" role="switch"><span class="lever"></span></span>
           </div>
         </div>
+        <div class="row" style="align-items:center">
+          <div class="grow" style="display:flex; align-items:center; gap:12px">
+            <div class="grow">
+              <span class="f-label">启动失败自动重试次数</span>
+              <span class="hint-text">0 = 关闭自动重启；在 Dock 外被人为停止（如 CMD 中手动结束）的进程不会自动重启</span>
+            </div>
+            <input class="well" id="maxRetriesInput" type="number" min="0" max="10" step="1" value="3" style="width:78px; flex-shrink:0" aria-label="启动失败自动重试次数">
+          </div>
+        </div>
         <div class="row">
           <div class="grow">
             <span class="f-label">网络代理 · 用于安装与更新下载</span>

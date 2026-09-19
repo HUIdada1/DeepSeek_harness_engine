@@ -61,17 +61,17 @@ body {
 .mono { font-family: 'JetBrains Mono', Consolas, monospace; }
 .hint-text { font-size: 12px; color: var(--text-mid); }
 
+/* 无外壳：去掉最外侧大框，仅保留卡片布局（chassis 仍承载入场动画与宽度约束） */
 .chassis {
   width: min(1060px, 100%);
-  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 8px;
-  box-shadow: inset 0 1px 0 var(--edge-hi), inset 0 -1px 0 var(--edge-lo), var(--shadow-chassis);
+  background: none;
+  border: none;
+  padding: 0;
+  box-shadow: none;
   animation: chassis-in 700ms cubic-bezier(0.32,0.72,0,1) both;
 }
 @keyframes chassis-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-.chassis-inner { border: 1px solid var(--line-soft); border-radius: 12px; background: var(--bg); overflow: hidden; }
+.chassis-inner { background: none; border: none; overflow: visible; }
 
 .hw-btn {
   position: relative;
@@ -173,11 +173,11 @@ main { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .core-actions { display: flex; gap: 8px; margin-top: 12px; }
 .core-actions .hw-btn { flex: 1; height: 34px; justify-content: center; font-size: 12px; padding: 0 4px; }
 .spec { margin-top: 14px; border-top: 1px solid var(--line-soft); }
-.spec-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; border-bottom: 1px solid var(--line-soft); }
+.spec-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--line-soft); }
 .spec-row:last-child { border-bottom: none; }
 .spec-row[hidden] { display: none; } /* 作者 display:flex 会覆盖 UA 的 [hidden] */
-.spec-row .k { font-size: 12px; color: var(--text-mid); }
-.spec-row .v { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; color: var(--text-hi); }
+.spec-row .k { font-size: 12px; color: var(--text-mid); flex-shrink: 0; }
+.spec-row .v { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; color: var(--text-hi); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .spec-row .v em { font-style: normal; color: var(--accent); }
 .core .note { margin-top: 12px; }
 .core-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 14px; }

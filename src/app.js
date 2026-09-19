@@ -112,17 +112,22 @@ function renderService(payload) {
   if (status === 'running' || status === 'degraded') {
     $('#readProbe').textContent = status === 'running' ? 'OK' : (payload.probeFails || 0) + '/' + 3
     $('#specUrl').textContent = payload.url || '探测中'
+    $('#specUrl').title = payload.url || '' // 地址过长截断显示，悬停看全文
     $('#specPid').textContent = payload.pid || '--'
     if (!upTimer && payload.startedAt) startUptime(payload.startedAt)
   }
   if (status === 'starting') {
     $('#specUrl').textContent = '解析中'
+    $('#specUrl').title = ''
     $('#specPid').textContent = payload.pid || '--'
     stopUptime()
     arc.style.transition = 'stroke-dashoffset 1500ms cubic-bezier(0.32,0.72,0,1)'
     arc.style.strokeDashoffset = String(ARC_C * 0.65)
   }
-  if (status === 'stopped') stopUptime()
+  if (status === 'stopped') {
+    stopUptime()
+    $('#specUrl').title = ''
+  }
 }
 function startUptime(startedAt) {
   stopUptime()
@@ -157,7 +162,7 @@ gaugeBtn.addEventListener('click', async () => {
 $('#restartBtn').addEventListener('click', () => window.dock.restart())
 $('#openBtn').addEventListener('click', () => {
   const url = state.service.url
-  if (url) window.dock.openExternal(url)
+  if (url) window.dock.openService(url) // 应用内嵌窗口打开，不弹系统浏览器
 })
 $('#copyBtn').addEventListener('click', async () => {
   const url = state.service.url
@@ -383,6 +388,8 @@ function renderConfig() {
   }
   $('#autostartSwitch').classList.toggle('on', Boolean(config.autostart))
   $('#autoCheckSwitch').classList.toggle('on', Boolean(config.update && config.update.autoCheck))
+  const retries = config.autoRestart && Number(config.autoRestart.maxRetries)
+  if (document.activeElement !== $('#maxRetriesInput')) $('#maxRetriesInput').value = Number.isFinite(retries) ? retries : 3
   if (document.activeElement !== $('#proxyInput')) $('#proxyInput').value = config.proxy || ''
   if (document.activeElement !== $('#projPathInput') && config.projectDir) $('#projPathInput').value = config.projectDir
   renderMode()
@@ -397,6 +404,12 @@ $('#autoCheckSwitch').addEventListener('click', () => {
   setConfig({ update: { autoCheck: !$('#autoCheckSwitch').classList.contains('on') } })
 })
 $('#proxyInput').addEventListener('change', () => setConfig({ proxy: $('#proxyInput').value.trim() }))
+$('#maxRetriesInput').addEventListener('change', () => {
+  const value = Math.max(0, Math.min(10, Math.floor(Number($('#maxRetriesInput').value)) || 0))
+  $('#maxRetriesInput').value = value
+  setConfig({ autoRestart: { maxRetries: value } })
+  appendLog('[config] 启动失败自动重试次数：' + (value === 0 ? '已关闭' : value + ' 次'), 'info')
+})
 
 // ---------- 主题 ----------
 function applyTheme(theme) {

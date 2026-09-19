@@ -204,26 +204,53 @@ async function checkReadiness({ projectDir, mode, nodeDir }) {
 }
 
 // ---- 服务启动入口定位 ----
-// 定位 pnpm / npx 的 node CLI 入口，让 service 以 node.exe 直跑它们。
-// 不能经 detached 的 cmd 启动：DETACHED_PROCESS 下 cmd 启动外部命令时不传任何
-// stdio，输出无法落盘（内建 echo 可以，node/pnpm 不行）；node.exe 由 CreateProcess
-// 的 STARTUPINFO 直接拿到日志句柄，pnpm→dsh 的子进程链再正常继承。
-function resolveSpawnEntry(nodeDir, mode) {
-  if (!nodeDir) return null
-  const exe = path.join(nodeDir, 'node.exe')
-  const script = mode === 'npm'
-    ? path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npx-cli.js')
-    : path.join(nodeDir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
-  try {
-    if (!fs.statSync(exe).isFile() || !fs.statSync(script).isFile()) return null
-  } catch {
-    return null
-  }
-  const args = mode === 'npm'
-    ? [script, '-y', '@deepseek-ai/dsh', 'web']
-    : [script, 'dsh', 'web']
-  return { exe, args }
+// 优先让 node.exe 直跑 pnpm / npx 的 CLI 入口（进程最少）。不能经 detached 的 cmd 启动：
+// DETACHED_PROCESS 下 cmd 启动外部命令时不传任何 stdio，输出无法落盘（内建 echo 可以，
+// node/pnpm 不行）；node.exe 由 CreateProcess 的 STARTUPINFO 直接拿到日志句柄，
+// pnpm→dsh 的子进程链再正常继承。
+// --no-open：dsh web 默认会拉起系统浏览器，由 Dock 内嵌窗口打开代替。
+function isFile(p) {
+  try { return fs.statSync(p).isFile() } catch { return false }
 }
+
+async function resolveSpawnEntry(nodeDir, mode, lookup = whereLookup) {
+  const exe = path.join(nodeDir, 'node.exe')
+  if (!nodeDir || !isFile(exe)) return null
+  const npmEntry = () => {
+    const script = path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    return isFile(script) ? { exe, args: [script, '-y', '@deepseek-ai/dsh', 'web', '--no-open'] } : null
+  }
+  const pnpmEntry = (dir) => {
+    const script = path.join(dir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+    return isFile(script) ? { exe, args: [script, 'dsh', 'web', '--no-open'] } : null
+  }
+  if (mode === 'npm') return npmEntry()
+  // pnpm 布局 1：npm 全局安装（nodeDir\node_modules\pnpm）
+  const direct = pnpmEntry(nodeDir)
+  if (direct) return direct
+  // 布局 2：where pnpm 命中的 shim 同目录（自定义全局 prefix 等场景）
+  for (const hit of await lookup('pnpm')) {
+    const entry = pnpmEntry(path.dirname(hit))
+    if (entry) return entry
+  }
+  return null
+}
+
+// helper 中间层源码：层 1 探测失败（corepack / standalone 等 pnpm 形态）时，由一个
+// detached 的 node 进程持有日志句柄并 spawn 普通子进程——DETACHED 的 node 再 spawn
+// 子进程时句柄链完全正常（与 pnpm 直跑同构），对任意 pnpm 安装形态都适用。
+// 参数：argv[1]=日志路径 argv[2]=cwd argv[3]=命令（node -e 无脚本名占位）；常驻转发退出码。
+const SPAWN_HELPER = [
+  "const { spawn } = require('node:child_process')",
+  "const fs = require('node:fs')",
+  // node -e 模式没有脚本名占位，用户参数从 argv[1] 开始（实测 node -e "…" a b c → argv=[node,'a','b','c']）
+  "const [log, cwd, command] = process.argv.slice(1)",
+  "const fd = fs.openSync(log, 'a')",
+  "const child = spawn('cmd.exe', ['/d', '/s', '/c', command], { cwd, stdio: ['ignore', fd, fd], windowsHide: true })",
+  "try { fs.closeSync(fd) } catch {}",
+  "child.once('exit', (code) => process.exit(code ?? 1))",
+  "child.once('error', () => process.exit(1))",
+].join('\n')
 
 // 构造注入了 Node 目录与代理的子进程环境
 function nodeEnv(nodeDir) {
@@ -245,8 +272,9 @@ function nodeEnv(nodeDir) {
   }
   // deepseek-harness 依赖树内含 Electron / 原生包，安装时走镜像防被墙
   env.ELECTRON_MIRROR = ELECTRON_MIRROR
-  // npx 启动服务时要查 registry 解析最新版本；用户未自配源时兜底国内镜像，防官方源超时
-  if (!env.npm_config_registry && !env.NPM_CONFIG_REGISTRY) env.npm_config_registry = NPM_MIRROR
+  // 注意：不在此处兜底 npm_config_registry——source 模式下 dsh 运行时要解析
+  // @deepseek-ai/dsh-host-* 插件包，镜像未同步会导致插件激活失败（实测）。
+  // 镜像兜底只应在 npm 模式（npx 查询主包）注入，见 service.cjs start()。
   return env
 }
 
@@ -323,5 +351,5 @@ async function runInit({ projectDir, mode, nodeDir, onStep, onLine }) {
 module.exports = {
   run, runShell, parseVersion, satisfiesEngines, compareVersions,
   detectNode, detectPnpm, detectProject, validateProjectDir, checkReadiness,
-  nodeEnv, resolveSpawnEntry, runInit,
+  nodeEnv, resolveSpawnEntry, SPAWN_HELPER, runInit, NPM_MIRROR,
 }

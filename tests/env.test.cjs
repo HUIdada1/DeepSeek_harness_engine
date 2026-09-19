@@ -33,7 +33,7 @@ test('compareVersions：按 major/minor/patch 升序比较', () => {
   assert.equal(compareVersions(v('v24.0.0'), v('v24.0.0')), 0)
 })
 
-test('resolveSpawnEntry：定位 node CLI 入口，布局缺失则回退 null', () => {
+test('resolveSpawnEntry：定位 node CLI 入口，布局缺失则回退 null', async () => {
   const fs = require('node:fs')
   const os = require('node:os')
   const path = require('node:path')
@@ -42,22 +42,34 @@ test('resolveSpawnEntry：定位 node CLI 入口，布局缺失则回退 null', 
   const write = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, '') }
   const nodeExe = path.join(tmp, 'node.exe')
   write(nodeExe)
+  const noWhere = async () => [] // 隔离 where pnpm，保证探测结果只取决于临时目录布局
 
   // 空 nodeDir → null
-  assert.equal(resolveSpawnEntry('', 'source'), null)
+  assert.equal(await resolveSpawnEntry('', 'source', noWhere), null)
 
-  // pnpm 布局齐全 → source 模式返回 pnpm.cjs + dsh web
+  // pnpm 布局齐全 → source 模式返回 pnpm.cjs + dsh web --no-open
   const pnpmCjs = path.join(tmp, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
   write(pnpmCjs)
-  assert.deepEqual(resolveSpawnEntry(tmp, 'source'), { exe: nodeExe, args: [pnpmCjs, 'dsh', 'web'] })
+  assert.deepEqual(await resolveSpawnEntry(tmp, 'source', noWhere), { exe: nodeExe, args: [pnpmCjs, 'dsh', 'web', '--no-open'] })
 
-  // npm 布局齐全 → npx-cli.js + -y @deepseek-ai/dsh web
+  // npm 布局齐全 → npx-cli.js + -y @deepseek-ai/dsh web --no-open
   const npxCli = path.join(tmp, 'node_modules', 'npm', 'bin', 'npx-cli.js')
   write(npxCli)
-  assert.deepEqual(resolveSpawnEntry(tmp, 'npm'), { exe: nodeExe, args: [npxCli, '-y', '@deepseek-ai/dsh', 'web'] })
+  assert.deepEqual(await resolveSpawnEntry(tmp, 'npm', noWhere), { exe: nodeExe, args: [npxCli, '-y', '@deepseek-ai/dsh', 'web', '--no-open'] })
 
-  // 入口文件缺失 → null（调用方回退 cmd 重定向）
+  // 入口文件缺失且 where 无命中 → null（调用方落 helper 中间层）
   fs.rmSync(pnpmCjs)
-  assert.equal(resolveSpawnEntry(tmp, 'source'), null)
+  assert.equal(await resolveSpawnEntry(tmp, 'source', noWhere), null)
+
+  // nodeDir 布局缺失但 where pnpm 命中同款布局 → 命中第二条探测路径
+  const altDir = path.join(tmp, 'alt')
+  const altShim = path.join(altDir, 'pnpm.cmd')
+  const altCjs = path.join(altDir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+  write(altShim)
+  write(altCjs)
+  assert.deepEqual(
+    await resolveSpawnEntry(tmp, 'source', async () => [altShim]),
+    { exe: nodeExe, args: [altCjs, 'dsh', 'web', '--no-open'] },
+  )
   fs.rmSync(tmp, { recursive: true, force: true })
 })

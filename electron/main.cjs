@@ -13,8 +13,11 @@ const E2E = process.env.DSH_DOCK_E2E === '1'
 // 自动化测试模式：不显示窗口、不创建托盘，全部后台静默运行
 const HEADLESS = SMOKE || E2E
 let mainWindow = null
+let serviceWindow = null
 let tray = null
 let quitting = false
+let lastAutoOpenedUrl = '' // 服务页内嵌窗口：每次 running 只自动打开一次，重启换 token 后重开
+let adoptDone = false // 开机自启/回连（adopt）静默恢复，不触发自动开窗；用户主动启动才开
 
 process.on('uncaughtException', (error) => {
   console.error('[main] uncaughtException:', error && error.stack || error)
@@ -61,13 +64,21 @@ function onReady() {
     dataDir: config.appDataDir(),
     onEvent: (payload) => {
       broadcast(payload) // 非 log 事件内部已刷新托盘
+      // running 即在应用内打开服务页（--no-open 已阻止 dsh 拉系统浏览器）；
+      // adopt 回连静默恢复不弹窗，仅用户主动启动后的 running 才开
+      if (payload.type === 'service' && payload.status === 'running' && payload.url && !HEADLESS) {
+        if (adoptDone && payload.url !== lastAutoOpenedUrl) {
+          lastAutoOpenedUrl = payload.url
+          openServiceWindow(payload.url)
+        }
+      }
     },
   })
   createWindow()
   createTray()
   wireIpc()
 
-  service.adoptOrphan()
+  service.adoptOrphan().finally(() => { adoptDone = true })
 
   updater.init({
     onState: (status) => broadcast({ type: 'update', ...status }),
@@ -230,19 +241,48 @@ function refreshTray() {
   if (!tray) return
   const serviceStatus = service.getStatus().status
   const running = serviceStatus === 'running' || serviceStatus === 'starting'
+  const url = service.getStatus().url
   const updatePhase = updater.getStatus().phase
   tray.setToolTip('DSH Dock 引擎坞 · 服务' + ({ running: '运行中', starting: '启动中', degraded: '异常', stopping: '停止中', stopped: '已停止' }[serviceStatus] || serviceStatus) + (updatePhase === 'available' || updatePhase === 'downloaded' ? ' · 有更新' : ''))
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开界面', click: () => showWindow() },
+    { label: '打开服务页面', enabled: Boolean(url), click: () => openServiceWindow(service.getStatus().url) },
     { type: 'separator' },
-    { label: '启动服务', enabled: serviceStatus === 'stopped', click: () => startFromConfig() },
-    { label: '停止服务', enabled: serviceStatus !== 'stopped', click: () => service.stop('tray') },
-    { label: '重启服务', enabled: serviceStatus === 'running' || serviceStatus === 'starting', click: () => service.restart() },
+    // 勾选即运行状态：勾上点击=启动，取消勾选=停止（stopping 期不可再点）
+    { label: '运行服务', type: 'checkbox', checked: running, enabled: serviceStatus !== 'stopping', click: (item) => {
+      if (item.checked) startFromConfig().finally(refreshTray) // 启动失败时状态事件不触发，主动重建菜单回正勾选
+      else service.stop('tray')
+    } },
+    { label: '重启服务', enabled: running, click: () => service.restart() },
     { type: 'separator' },
-    { label: '开机自启', type: 'checkbox', checked: config.getConfig().autostart, click: (item) => setAutostart(item.checked) },
+    // 勾选状态以系统注册为准（config 只做回滚缓存），否则安装器注册的自启不会显示勾选
+    { label: '开机自启', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (item) => setAutostart(item.checked) },
     { type: 'separator' },
     { label: '退出', click: () => quitWithAsk() },
   ]))
+}
+
+// 服务页内嵌窗口：替代系统浏览器。重启后 token 变化 → loadURL 刷新到最新地址
+function openServiceWindow(url) {
+  if (!url || !/^https?:\/\//.test(url)) return
+  if (serviceWindow && !serviceWindow.isDestroyed()) {
+    serviceWindow.loadURL(url).catch(() => {})
+    serviceWindow.show()
+    serviceWindow.focus()
+    return
+  }
+  serviceWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 960,
+    minHeight: 640,
+    title: 'DSH 服务',
+    backgroundColor: '#0a0c10',
+    autoHideMenuBar: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  serviceWindow.loadURL(url).catch(() => {})
+  serviceWindow.on('closed', () => { serviceWindow = null })
 }
 
 function quitWithAsk() {
@@ -357,6 +397,9 @@ function wireIpc() {
   ipcMain.handle('service:start', (_event, overrides) => startFromConfig(overrides || {}))
   ipcMain.handle('service:stop', () => service.stop('ui'))
   ipcMain.handle('service:restart', () => service.restart())
+  ipcMain.handle('service:openWindow', (_event, url) => {
+    if (typeof url === 'string' && /^https?:\/\//.test(url)) openServiceWindow(url)
+  })
   ipcMain.handle('env:detectNode', () => env.detectNode())
   ipcMain.handle('env:detectProject', (_event, dir) => env.detectProject(dir))
   ipcMain.handle('env:readiness', async (_event, payload) => env.checkReadiness(payload))

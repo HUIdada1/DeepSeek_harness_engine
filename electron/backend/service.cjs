@@ -20,6 +20,8 @@ const RESTART_BACKOFF_MS = [5_000, 15_000, 60_000]
 const PORT_RELEASE_WAIT_MS = 8_000
 const ADOPT_GIVEUP_MS = 90_000 // 收养态无 URL 的最长等待（pid 复用后 pidAlive 恒真，只能靠时间收口）
 const ADOPT_FAIL_PROBES = 12 // 收养态有 URL 但持续探测失败的上限（12 × 5s）
+// 0=正常结束；0xC000013A=Ctrl+C / 关闭终端。两者都判定为人为停止，不做自动重启
+const MANUAL_STOP_CODES = new Set([0, 3221225786])
 
 let emit = () => {}
 let dir = null
@@ -279,8 +281,15 @@ async function start(startOpts, options = {}) {
     } catch (rotateError) {
       emit({ type: 'log', level: 'warn', line: '[log] 轮转失败（可能有进程仍持有日志句柄），继续追加：' + (rotateError.message || rotateError) })
     }
-    const env = require('./env.cjs').nodeEnv(opts.nodeDir)
-    const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web' : 'pnpm dsh web'
+    const envModule = require('./env.cjs')
+    const env = envModule.nodeEnv(opts.nodeDir)
+    // npm 模式 npx 每次启动要查 registry；用户未自配源时兜底国内镜像。
+    // 只限 npm 模式：source 模式的 dsh 运行时插件解析依赖官方源完整性，注入镜像会坏
+    if (opts.mode === 'npm' && !env.npm_config_registry && !env.NPM_CONFIG_REGISTRY) {
+      env.npm_config_registry = envModule.NPM_MIRROR
+    }
+    // --no-open：不弹系统浏览器，由 Dock 内嵌窗口打开（running 后自动拉起）
+    const baseCommand = opts.mode === 'npm' ? 'npx -y @deepseek-ai/dsh web --no-open' : 'pnpm dsh web --no-open'
     // npm 模式跑的是 registry 发布包，与本地项目无关；且 npx 在 pnpm workspace 根目录
     // 下会被本地 node_modules 结构干扰而找不到 bin（实测 'dsh' 不是内部或外部命令），
     // 固定用 Dock 数据目录作 cwd
@@ -289,33 +298,40 @@ async function start(startOpts, options = {}) {
     appendDockLine('[dock] ---- DSH Dock 启动服务 ' + new Date().toISOString() + ' ----')
     initTailOffset()
 
-    // node.exe 直跑 pnpm/npx 的 CLI 入口，stdio 传日志句柄（spawn 同步返回后父进程即关
-    // 句柄，子进程树持有继承句柄，管理器生死不影响写入）。不能经 detached 的 cmd 重定向：
-    // 1) Node 默认参数转义会把重定向命令里的 " 变 \"，cmd /s 剥外层引号后重定向目标成
-    //    非法路径，进程立即 code=1 退出且日志无输出
-    // 2) 即使引号转义正确，DETACHED_PROCESS 的 cmd 启动外部命令时也不传任何 stdio，
-    //    pnpm/node 的输出全部丢失，URL 无法解析
-    const entry = require('./env.cjs').resolveSpawnEntry(opts.nodeDir, opts.mode)
+    // 端口预检：未经 Dock 停止的残留 dsh web（如进程树被不完整终止）会占住默认端口，
+    // 让 webserver 插件 EADDRINUSE、启动必败并空耗重启次数。给一句人话提示
+    const portPid = await pidByPort(FALLBACK_PORT)
+    if (portPid) {
+      emit({ type: 'log', level: 'warn', line: '[start] 端口 ' + FALLBACK_PORT + ' 已被 pid=' + portPid + ' 占用（可能是历史残留的服务进程），本次启动可能失败；可结束该进程后重试' })
+    }
+
+    // 层 1：node.exe 直跑 pnpm/npx 的 CLI 入口，stdio 传日志句柄（spawn 同步返回后父进程
+    // 即关句柄，子进程树持有继承句柄，管理器生死不影响写入）。不能经 detached 的 cmd
+    // 重定向：1) Node 默认参数转义会把重定向命令里的 " 变 \"，cmd /s 剥外层引号后重定向
+    // 目标成非法路径，进程立即 code=1 退出；2) 即使转义正确，DETACHED_PROCESS 的 cmd
+    // 启动外部命令时也不传任何 stdio，输出全部丢失、URL 无法解析。
+    // 层 2：探测失败（corepack / standalone 等形态）改用 helper 中间层——detached 的
+    // node 再 spawn 普通子进程时句柄链正常（与直跑同构），命令原文经 argv 传递。
+    const entry = await require('./env.cjs').resolveSpawnEntry(opts.nodeDir, opts.mode)
     let spawnFile
     let spawnArgs
-    let logFd = null
     if (entry) {
       spawnFile = entry.exe
       spawnArgs = entry.args
     } else {
-      emit({ type: 'log', level: 'warn', line: '[spawn] 未定位到 node CLI 入口，回退 cmd 重定向（该模式下进程输出无法写日志，仅靠端口探测兜底）' })
-      spawnFile = 'cmd.exe'
-      spawnArgs = ['/d', '/s', '/c', baseCommand + ' >> "' + logPath() + '" 2>&1']
+      emit({ type: 'log', level: 'warn', line: '[spawn] 未定位到 pnpm/npx 的 node 入口，改用 helper 中间层启动' })
+      spawnFile = 'node.exe' // nodeEnv 已把 nodeDir 前置到 PATH
+      spawnArgs = ['-e', require('./env.cjs').SPAWN_HELPER, logPath(), spawnCwd, baseCommand]
     }
+    let logFd = null
     try {
       if (entry) logFd = fs.openSync(logPath(), 'a')
       child = spawn(spawnFile, spawnArgs, {
         cwd: spawnCwd,
         env,
         detached: true,
-        stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
+        stdio: entry ? ['ignore', logFd, logFd] : 'ignore',
         windowsHide: true,
-        windowsVerbatimArguments: !entry, // cmd 重定向命令含引号路径，禁止 Node 转义
       })
       child.unref()
     } finally {
@@ -332,16 +348,21 @@ async function start(startOpts, options = {}) {
       state.url = ''
       state.port = null
       if (userStop || status === 'stopping') return
+      // 0=正常结束 / 0xC000013A=Ctrl+C / 关闭终端：判定为人为停止，不进自动重启
+      const manual = kind === 'exit' && MANUAL_STOP_CODES.has(Number(detail))
       try {
         if (kind === 'error') {
           emit({ type: 'log', level: 'err', line: '[service] 进程启动失败：' + detail })
+        } else if (manual) {
+          appendDockLine('[dock] 服务进程停止 code=' + detail + '（人为停止） ' + new Date().toISOString())
+          emit({ type: 'log', level: 'warn', line: '[service] 服务进程已停止（退出码 ' + detail + '，判定为人为停止），不自动重启' })
         } else {
           appendDockLine('[dock] 服务进程异常退出 code=' + detail + ' ' + new Date().toISOString())
           emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + detail + '），最近日志见上' })
         }
       } catch { /* 日志写入失败不阻塞状态收口 */ }
       markStopped() // 如实反映进程已死，再进入退避
-      maybeAutoRestart()
+      if (!manual) maybeAutoRestart()
     }
     self.once('error', (error) => onDeath('error', error && error.message ? error.message : String(error)))
     self.once('exit', (code) => onDeath('exit', code))
@@ -434,14 +455,17 @@ async function restart() {
 // ---- 退避自动重启（方案 6 #9）----
 function maybeAutoRestart() {
   const config = require('./config.cjs').getConfig()
-  if (!config.autoRestart.enabled) return
+  if (!config.autoRestart.enabled || !(config.autoRestart.maxRetries > 0)) {
+    emit({ type: 'log', level: 'warn', line: '[service] 自动重启已关闭（重试次数为 0），保持停止' })
+    return
+  }
   if (restartAttempts >= config.autoRestart.maxRetries) {
     emit({ type: 'log', level: 'err', line: '[service] 自动重启已达上限（' + config.autoRestart.maxRetries + ' 次），保持停止' })
     return
   }
   const delay = RESTART_BACKOFF_MS[Math.min(restartAttempts, RESTART_BACKOFF_MS.length - 1)]
   restartAttempts += 1
-  emit({ type: 'log', level: 'warn', line: '[service] ' + delay / 1000 + 's 后第 ' + restartAttempts + ' 次自动重启' })
+  emit({ type: 'log', level: 'warn', line: '[service] ' + delay / 1000 + 's 后第 ' + restartAttempts + ' 次自动重启（点表盘或托盘取消勾选「运行服务」可取消）' })
   restartTimer = setTimeout(async () => {
     restartTimer = null
     if (userStop || child) return
