@@ -29,8 +29,8 @@
               </defs>
               <circle class="ticks-ring" cx="120" cy="120" r="112" stroke-width="1.5"
                       stroke-dasharray="1.5 9.42" stroke-linecap="round" transform="rotate(-90 120 120)"/>
-              <circle class="track" cx="120" cy="120" r="90" stroke-width="6"/>
-              <circle class="arc" id="gaugeArc" cx="120" cy="120" r="90" stroke-width="6" stroke-linecap="round"
+              <circle class="track" cx="120" cy="120" r="90" stroke-width="9"/>
+              <circle class="arc" id="gaugeArc" cx="120" cy="120" r="90" stroke-width="9" stroke-linecap="round"
                       transform="rotate(-90 120 120)"
                       stroke-dasharray="565.49 565.49" stroke-dashoffset="565.49"/>
             </svg>
@@ -64,11 +64,10 @@
             <div class="spec-cell"><span class="k">进程</span><span class="v" id="specPid">--</span></div>
             <div class="spec-cell"><span class="k">模式</span><span class="v" id="specMode">--</span></div>
             <div class="spec-cell"><span class="k">自动重启</span><span class="v" id="specRestart">--</span></div>
-            <div class="spec-cell"><span class="k">关闭行为</span><span class="v" id="specClose">托盘常驻</span></div>
           </div>
           <div class="svc-actions">
             <button class="btn" id="restartBtn" disabled>重启</button>
-            <button class="btn" id="openBtn" disabled>打开界面</button>
+            <button class="btn accent" id="openBtn" disabled>打开界面</button>
             <span class="sep" aria-hidden="true"></span>
             <button class="btn icon-btn" id="themeBtn" title="切换亮色 / 暗色" aria-label="切换主题">
               <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -95,8 +94,8 @@
         <!-- 环境与项目：页签收纳 -->
         <section class="card mod spot">
           <div class="env-tabs" role="tablist" aria-label="配置页签">
-            <button class="pill tab on" data-tab="proj" role="tab" aria-selected="true"><i class="led off" id="projLed"></i>项目</button>
-            <button class="pill tab" data-tab="env" role="tab" aria-selected="false"><i class="led off" id="nodeLed"></i>运行环境</button>
+            <button class="lamp-btn tab on" data-tab="proj" role="tab" aria-selected="true"><i class="led off" id="projLed"></i>项目</button>
+            <button class="lamp-btn tab" data-tab="env" role="tab" aria-selected="false"><i class="led off" id="nodeLed"></i>运行环境</button>
           </div>
 
           <div class="pane on" id="pane-proj">
@@ -177,7 +176,7 @@
     </div>
   </main>
 
-  <!-- 设置弹窗：热更新 + 配置 + 关于 -->
+  <!-- 设置弹窗：热更新 / 配置（tab 切换）+ 液态玻璃 -->
   <div class="overlay" id="overlay" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-label="设置">
       <div class="modal-head">
@@ -185,9 +184,13 @@
         <button class="modal-close" id="modalClose" aria-label="关闭设置">×</button>
       </div>
 
+      <div class="modal-tabs" role="tablist" aria-label="设置分类">
+        <button class="lamp-btn tab on" data-tab="update" role="tab" aria-selected="true"><i class="mod-led" id="upLed"></i>热更新</button>
+        <button class="lamp-btn tab" data-tab="config" role="tab" aria-selected="false">配置</button>
+      </div>
+
       <!-- 热更新 -->
-      <section class="m-sec">
-        <header class="mod-head"><h2>热更新</h2><span class="mod-led" id="upLed"></span></header>
+      <div class="m-pane on" id="pane-update">
         <div class="up-rows">
           <div class="spec-row">
             <span class="k">自动检测</span>
@@ -212,55 +215,44 @@
           <button class="btn" id="releasesBtn">Releases</button>
         </div>
         <p class="note" id="portableNote" hidden>当前为便携版：仅提示新版本，请到 GitHub Releases 手动下载。</p>
-      </section>
+      </div>
 
       <!-- 配置 -->
-      <section class="m-sec">
-        <header class="mod-head"><h2>配置</h2></header>
-        <div class="row" style="align-items:flex-start">
+      <div class="m-pane" id="pane-config">
+        <div class="cfg-block">
+          <span class="f-label">关闭窗口时</span>
+          <div class="bank" id="closeBank">
+            <button class="lamp-btn" data-close="tray"><i class="dot"></i>托盘</button>
+            <button class="lamp-btn" data-close="exit"><i class="dot"></i>退出</button>
+            <button class="lamp-btn" data-close="ask"><i class="dot"></i>询问</button>
+          </div>
+        </div>
+        <div class="switch-row">
           <div class="grow">
-            <span class="f-label">关闭窗口时</span>
-            <div class="bank" id="closeBank">
-              <button class="lamp-btn" data-close="tray"><i class="dot"></i>托盘</button>
-              <button class="lamp-btn" data-close="exit"><i class="dot"></i>退出</button>
-              <button class="lamp-btn" data-close="ask"><i class="dot"></i>询问</button>
-            </div>
+            <span class="f-label">关窗后服务保持</span>
+            <span class="hint-text">独立后台进程，由托盘「停止服务」控制</span>
           </div>
+          <span class="switch on locked"><span class="lever"></span></span>
         </div>
-        <div class="row" style="align-items:center">
-          <div class="grow" style="display:flex; align-items:center; gap:12px">
-            <div class="grow">
-              <span class="f-label">关窗后服务保持</span>
-              <span class="hint-text">独立后台进程，由托盘「停止服务」控制</span>
-            </div>
-            <span class="switch on locked"><span class="lever"></span></span>
-          </div>
-        </div>
-        <div class="row" style="align-items:center">
-          <div class="grow" style="display:flex; align-items:center; gap:12px">
-            <div class="grow">
-              <span class="f-label">开机自启</span>
-              <span class="hint-text">登录 Windows 后静默拉起并回连服务</span>
-            </div>
-            <span class="switch" id="autostartSwitch" role="switch"><span class="lever"></span></span>
-          </div>
-        </div>
-        <div class="row" style="align-items:center">
-          <div class="grow" style="display:flex; align-items:center; gap:12px">
-            <div class="grow">
-              <span class="f-label">启动失败自动重试次数</span>
-              <span class="hint-text">0 = 关闭自动重启；在 Dock 外被人为停止（如 CMD 中手动结束）的进程不会自动重启</span>
-            </div>
-            <input class="well" id="maxRetriesInput" type="number" min="0" max="10" step="1" value="3" style="width:78px; flex-shrink:0" aria-label="启动失败自动重试次数">
-          </div>
-        </div>
-        <div class="row">
+        <div class="switch-row">
           <div class="grow">
-            <span class="f-label">网络代理 · 用于安装与更新下载</span>
-            <input class="well" id="proxyInput" placeholder="例如 127.0.0.1:7897">
+            <span class="f-label">开机自启</span>
+            <span class="hint-text">登录 Windows 后静默拉起并回连服务</span>
           </div>
+          <span class="switch" id="autostartSwitch" role="switch"><span class="lever"></span></span>
         </div>
-      </section>
+        <div class="switch-row">
+          <div class="grow">
+            <span class="f-label">启动失败自动重试次数</span>
+            <span class="hint-text">0 = 关闭自动重启；在 Dock 外被人为停止（如 CMD 中手动结束）的进程不会自动重启</span>
+          </div>
+          <input class="well" id="maxRetriesInput" type="number" min="0" max="10" step="1" value="3" style="width:78px; flex-shrink:0" aria-label="启动失败自动重试次数">
+        </div>
+        <div class="cfg-block">
+          <span class="f-label">网络代理 · 用于安装与更新下载</span>
+          <input class="well" id="proxyInput" placeholder="例如 127.0.0.1:7897">
+        </div>
+      </div>
 
       <p class="about-line" id="aboutLine">DSH Dock · 沐辉</p>
     </div>

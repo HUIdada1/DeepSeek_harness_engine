@@ -346,7 +346,7 @@ $('#clearBtn').addEventListener('click', () => { logBody.textContent = '' })
 $('#exportBtn').addEventListener('click', () => window.dock.exportLog())
 $('#logFolderBtn').addEventListener('click', () => window.dock.openLogFolder())
 
-// ---------- 设置弹窗 ----------
+// ---------- 设置弹窗（tab 切换） ----------
 const overlay = $('#overlay')
 $('#settingsBtn').addEventListener('click', () => { overlay.hidden = false })
 $('#modalClose').addEventListener('click', () => { overlay.hidden = true })
@@ -354,6 +354,18 @@ overlay.addEventListener('click', (event) => { if (event.target === overlay) ove
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !overlay.hidden) overlay.hidden = true
 })
+for (const tab of $$('.modal-tabs .tab')) {
+  tab.addEventListener('click', () => {
+    if (tab.classList.contains('on')) return
+    for (const other of $$('.modal-tabs .tab')) {
+      other.classList.toggle('on', other === tab)
+      other.setAttribute('aria-selected', other === tab)
+    }
+    for (const pane of $$('.m-pane')) {
+      pane.classList.toggle('on', pane.id === 'pane-' + tab.dataset.tab)
+    }
+  })
+}
 
 function renderUpdate(update) {
   state.update = update
@@ -394,7 +406,6 @@ $('#releasesBtn').addEventListener('click', () => window.dock.openReleases())
 function renderConfig() {
   const config = state.config
   if (!config) return
-  $('#specClose').textContent = { tray: '托盘常驻', exit: '直接退出', ask: '每次询问' }[config.closeBehavior] || '托盘常驻'
   const restartCfg = config.autoRestart
   const restartEnabled = restartCfg && restartCfg.enabled !== false
   const restartRetries = restartCfg && Number(restartCfg.maxRetries)
@@ -489,9 +500,11 @@ window.dock.onEvent((payload) => {
   }
   renderNode(nodeInfo)
 
-  if (init.project && init.project.found) {
-    $('#projPathInput').value = init.project.found.dir
-    await setConfig({ projectDir: init.project.found.dir })
+  if (init.project && init.project.found && init.project.dir) {
+    $('#projPathInput').value = init.project.dir
+    await setConfig({ projectDir: init.project.dir })
+  } else if (init.project && init.project.found && !init.project.dir) {
+    appendLog('[env] 检测到项目目录但路径为空，请手动浏览选择', 'warn')
   } else {
     appendLog('[env] 未自动找到 deepseek-harness 仓库，请在「项目目录」浏览选择', 'warn')
   }
