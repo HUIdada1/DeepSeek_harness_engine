@@ -13,27 +13,10 @@
 <body>
   <div class="chassis">
     <div class="chassis-inner">
-
-      <div class="titlebar">
-        <img class="logo" src="assets/icon.png" alt="DSH Dock Logo" draggable="false">
-        <span class="name">DSH Dock</span>
-        <span class="sub">DSH 引擎坞 · DEEPSEEK-HARNESS CONTROL UNIT</span>
-        <div class="tb-right">
-          <button class="hw-btn" id="themeBtn" title="切换铝亮 / 石墨暗主题"><i class="ph ph-circle-half"></i><span id="themeLab">DARK</span></button>
-          <button class="hw-btn" id="settingsBtn" title="设置与更新">
-            <i class="ph ph-gear"></i>设置
-            <span class="dot-badge" id="updateDot" hidden></span>
-          </button>
-          <button class="win-btn" id="minBtn" title="最小化"><i class="ph ph-minus"></i></button>
-          <button class="win-btn" id="trayBtn" title="关闭到托盘（服务继续运行）"><i class="ph ph-arrow-corner-down-right"></i></button>
-          <button class="win-btn close" id="closeBtn" title="关闭窗口"><i class="ph ph-x"></i></button>
-        </div>
-      </div>
-
       <main>
         <div class="deck">
 
-          <!-- 核心舱：表盘即电源 -->
+          <!-- 核心控制：表盘即电源 -->
           <aside class="module core" style="--boot:60ms">
             <span class="rail"></span>
             <button class="gauge-wrap stopped" id="gaugeBtn" aria-label="点击启动或停止服务">
@@ -47,29 +30,33 @@
               </svg>
               <div class="readout stopped" id="readout">
                 <div class="st"><span class="dot"></span><span id="stateText">已停止</span></div>
-                <div class="up" id="readUp">UP 00:00:00</div>
-                <div class="probe">PROBE <b id="readProbe">--</b> · 5s</div>
+                <div class="up" id="readUp">运行 00:00:00</div>
+                <div class="probe">探针 <b id="readProbe">--</b> · 5s</div>
                 <div class="act-hint" id="actHint">点击启动</div>
               </div>
             </button>
             <div class="core-actions">
               <button class="hw-btn" id="restartBtn" disabled><i class="ph ph-arrows-clockwise"></i>重启</button>
               <button class="hw-btn" id="openBtn" disabled><i class="ph ph-arrow-square-out"></i>打开界面</button>
-              <button class="hw-btn" id="copyBtn" disabled><i class="ph ph-copy"></i>复制 URL</button>
+              <button class="hw-btn" id="copyBtn" disabled><i class="ph ph-copy"></i>复制地址</button>
             </div>
             <div class="spec">
-              <div class="spec-row"><span class="k">URL</span><span class="v" id="specUrl">未运行</span></div>
-              <div class="spec-row"><span class="k">PID</span><span class="v" id="specPid">--</span></div>
-              <div class="spec-row"><span class="k">MODE</span><span class="v" id="specMode">--</span></div>
+              <div class="spec-row"><span class="k">地址</span><span class="v" id="specUrl">未运行</span></div>
+              <div class="spec-row"><span class="k">进程</span><span class="v" id="specPid">--</span></div>
+              <div class="spec-row"><span class="k">模式</span><span class="v" id="specMode">--</span></div>
               <div class="spec-row"><span class="k">关闭行为</span><span class="v" id="specClose">托盘常驻</span></div>
             </div>
-            <p class="note" style="margin-top:12px">表盘即电源：点击启动，再点停止。关闭窗口到托盘不影响服务。</p>
+            <p class="note">表盘即电源：点击启动，再点停止。关闭窗口到托盘不影响服务。</p>
+            <div class="core-foot">
+              <button class="hw-btn" id="settingsBtn" title="设置与更新"><i class="ph ph-gear"></i>设置<span class="dot-badge" id="updateDot" hidden></span></button>
+              <button class="hw-btn" id="themeBtn" title="切换暗色 / 亮色主题"><i class="ph ph-circle-half"></i><span id="themeLab">暗色</span></button>
+            </div>
           </aside>
 
-          <!-- 01 NODE -->
+          <!-- 运行环境 -->
           <section class="module" style="--boot:160ms">
             <span class="rail"></span>
-            <header class="mod-head"><span class="mod-no">01</span><h2>Node Runtime</h2><span class="mod-led off" id="nodeLed"></span></header>
+            <header class="mod-head"><h2>运行环境</h2><span class="mod-led off" id="nodeLed"></span></header>
             <div class="row">
               <div class="grow">
                 <span class="f-label">Node 可执行文件 · 自动检测，可自定义</span>
@@ -93,10 +80,10 @@
             <p class="note" id="nodeNote">切换不修改全局环境，重启服务即回退；检测到 nvm-windows 时可选全局 use。</p>
           </section>
 
-          <!-- 02 PROJECT -->
+          <!-- 项目 -->
           <section class="module" style="--boot:260ms">
             <span class="rail"></span>
-            <header class="mod-head"><span class="mod-no">02</span><h2>Project</h2><span class="mod-led off" id="projLed"></span></header>
+            <header class="mod-head"><h2>项目</h2><span class="mod-led off" id="projLed"></span></header>
             <div class="row">
               <div class="grow">
                 <span class="f-label">仓库路径 · 自动获取，可自定义</span>
@@ -108,7 +95,7 @@
               <div class="grow">
                 <span class="f-label">启动方式</span>
                 <div class="bank" id="modeBank">
-                  <button class="lamp-btn" data-mode="source"><i class="dot"></i>SOURCE</button>
+                  <button class="lamp-btn" data-mode="source"><i class="dot"></i>源码</button>
                   <button class="lamp-btn" data-mode="npm"><i class="dot"></i>NPM</button>
                 </div>
               </div>
@@ -130,15 +117,15 @@
           </section>
         </div>
 
-        <!-- 03 TELEMETRY -->
+        <!-- 运行日志 -->
         <section class="console" style="--boot:380ms">
           <div class="console-head">
-            <h2><span class="mod-no">03</span>Telemetry · 运行日志</h2>
+            <h2>运行日志</h2>
             <div class="tools">
-              <button class="hw-btn filter on" data-filter="all">ALL</button>
-              <button class="hw-btn filter" data-filter="info">INFO</button>
-              <button class="hw-btn filter" data-filter="warn">WARN</button>
-              <button class="hw-btn filter" data-filter="err">ERR</button>
+              <button class="hw-btn filter on" data-filter="all">全部</button>
+              <button class="hw-btn filter" data-filter="info">信息</button>
+              <button class="hw-btn filter" data-filter="warn">警告</button>
+              <button class="hw-btn filter" data-filter="err">错误</button>
               <button class="hw-btn" id="exportBtn"><i class="ph ph-download-simple"></i>导出</button>
               <button class="hw-btn" id="logFolderBtn"><i class="ph ph-folder-open"></i>日志</button>
               <button class="hw-btn" id="clearBtn"><i class="ph ph-broom"></i>清空</button>
@@ -146,7 +133,6 @@
           </div>
           <div class="log-body" id="logBody"></div>
           <div class="console-foot">
-            <span>UTF-8</span><span>自动滚动 ON</span>
             <span class="sp" id="logFileLabel"></span>
           </div>
         </section>
@@ -154,18 +140,17 @@
     </div>
   </div>
 
-  <!-- 设置弹窗：热更新 + 配置 -->
+  <!-- 设置弹窗：热更新 + 配置 + 关于 -->
   <div class="overlay" id="overlay" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-label="设置">
       <div class="modal-head">
-        <span class="mod-no">SET</span>
-        <h2>Settings · 设置</h2>
+        <h2>设置</h2>
         <button class="modal-close" id="modalClose" aria-label="关闭设置"><i class="ph ph-x"></i></button>
       </div>
 
-      <!-- 04 UPDATE -->
+      <!-- 热更新 -->
       <section class="m-sec">
-        <header class="mod-head"><span class="mod-no">04</span><h2>Update · 热更新</h2><span class="mod-led" id="upLed"></span></header>
+        <header class="mod-head"><h2>热更新</h2><span class="mod-led" id="upLed"></span></header>
         <div class="up-rows">
           <div class="spec-row">
             <span class="k">自动检测</span>
@@ -192,9 +177,9 @@
         <p class="note" id="portableNote" hidden>当前为便携版：仅提示新版本，请到 GitHub Releases 手动下载。</p>
       </section>
 
-      <!-- 05 CONFIGURATION -->
+      <!-- 配置 -->
       <section class="m-sec">
-        <header class="mod-head"><span class="mod-no">05</span><h2>Configuration · 配置</h2></header>
+        <header class="mod-head"><h2>配置</h2></header>
         <div class="row" style="align-items:flex-start">
           <div class="grow">
             <span class="f-label">关闭窗口时</span>
@@ -230,10 +215,10 @@
           </div>
         </div>
       </section>
+
+      <p class="about-line" id="aboutLine">DSH Dock · 沐辉</p>
     </div>
   </div>
-
-  <footer class="note-line" id="footLine">DSH DOCK · 沐辉</footer>
 
 <script src="app.js"></script>
 </body>

@@ -51,6 +51,14 @@
       {
         "from": "build/icon.png",
         "to": "build/icon.png"
+      },
+      {
+        "from": "build/tray.png",
+        "to": "build/tray.png"
+      },
+      {
+        "from": "build/tray@2x.png",
+        "to": "build/tray@2x.png"
       }
     ],
     "win": {

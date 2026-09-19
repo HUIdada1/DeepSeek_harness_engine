@@ -5,9 +5,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { app } = require('electron')
 
-// userData 固定为 %APPDATA%\dsh-dock（不受 productName 空格影响）
+// userData 固定为 %APPDATA%\dsh-dock（不受 productName 空格影响）；
+// DSH_DOCK_USER_DATA 供自动化测试/截图隔离实例，避免读写正式配置
 function appDataDir() {
-  return path.join(app.getPath('appData'), 'dsh-dock')
+  return process.env.DSH_DOCK_USER_DATA || path.join(app.getPath('appData'), 'dsh-dock')
 }
 function ensureDirs() {
   for (const dir of [appDataDir(), path.join(appDataDir(), 'logs')]) {

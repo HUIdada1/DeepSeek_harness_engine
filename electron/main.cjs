@@ -1,9 +1,8 @@
 // DSH Dock 主进程：窗口 / 托盘 / 单实例 / IPC 装配
 'use strict'
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, nativeImage } = require('electron')
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, nativeImage, nativeTheme } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
-const { execFile } = require('node:child_process')
 const config = require('./backend/config.cjs')
 const env = require('./backend/env.cjs')
 const service = require('./backend/service.cjs')
@@ -24,7 +23,8 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandledRejection:', reason && reason.stack || reason)
 })
 
-app.setPath('userData', path.join(app.getPath('appData'), 'dsh-dock'))
+// userData 可用环境变量隔离（自动化测试/截图不占用正式版实例与配置）
+app.setPath('userData', process.env.DSH_DOCK_USER_DATA || path.join(app.getPath('appData'), 'dsh-dock'))
 config.ensureDirs()
 
 if (!app.requestSingleInstanceLock()) {
@@ -80,7 +80,7 @@ function onReady() {
     }, 1500)
     setTimeout(() => {
       if (!mainWindow || mainWindow.isDestroyed()) { app.quit(); return }
-      mainWindow.webContents.executeJavaScript('JSON.stringify({ foot: document.querySelector("#footLine").textContent, logs: document.querySelectorAll("#logBody .log-line").length, nodeVer: document.querySelector("#nodeBig").textContent, nodeFit: !document.querySelector("#nodeFit").hidden, proj: document.querySelector("#projPathInput").value })')
+      mainWindow.webContents.executeJavaScript('JSON.stringify({ ver: document.querySelector("#curVer").textContent, logs: document.querySelectorAll("#logBody .log-line").length, nodeVer: document.querySelector("#nodeBig").textContent, nodeFit: !document.querySelector("#nodeFit").hidden, proj: document.querySelector("#projPathInput").value })')
         .then((summary) => console.log('[renderer state]', summary))
         .catch(() => {})
         .finally(() => app.quit())
@@ -119,6 +119,8 @@ function onReady() {
 
 function createWindow() {
   const configData = config.loadConfig()
+  // 原生标题栏颜色随应用主题（不设置时 Windows 永远是系统色，暗色主题下外框发白）
+  nativeTheme.themeSource = configData.theme === 'light' ? 'light' : 'dark'
   mainWindow = new BrowserWindow({
     width: 1080,
     height: 940,
@@ -147,6 +149,24 @@ function createWindow() {
   }
   mainWindow.once('ready-to-show', () => {
     if (!HEADLESS) mainWindow.show()
+    // 界面目检模式：DSH_DOCK_SHOT=输出路径，渲染稳定后整页截图并退出
+    const shotPath = process.env.DSH_DOCK_SHOT
+    if (shotPath && !HEADLESS) {
+      setTimeout(async () => {
+        try {
+          if (process.env.DSH_DOCK_SHOT_OPEN === 'settings') {
+            await mainWindow.webContents.executeJavaScript("document.querySelector('#settingsBtn').click()")
+            await new Promise((resolve) => setTimeout(resolve, 600))
+          }
+          const image = await mainWindow.webContents.capturePage()
+          fs.writeFileSync(shotPath, image.toPNG())
+          console.log('[shot] 已输出', shotPath)
+        } catch (error) {
+          console.error('[shot] 失败：', error.message)
+        }
+        app.quit()
+      }, 2500)
+    }
   })
   // 关闭行为：tray 隐藏 / exit 退出 / ask 询问（可记住选择）
   mainWindow.on('close', (event) => {
@@ -184,10 +204,14 @@ function createWindow() {
 }
 
 function trayIcon() {
-  const p = app.isPackaged
-    ? path.join(process.resourcesPath, 'build', 'icon.png')
-    : path.join(__dirname, '..', 'build', 'icon.png')
-  return nativeImage.createFromPath(p)
+  const dir = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..')
+  // 托盘专用 16px 图（HiDPI 自动拾取同目录 tray@2x.png）；缺失时回退大图强制缩放
+  const image = nativeImage.createFromPath(path.join(dir, 'build', 'tray.png'))
+  if (image.isEmpty()) {
+    console.error('[tray] 图标缺失：', path.join(dir, 'build', 'tray.png'))
+    return nativeImage.createFromPath(path.join(dir, 'build', 'icon.png')).resize({ width: 16, height: 16 })
+  }
+  return image
 }
 
 function createTray() {
@@ -242,31 +266,28 @@ function quitWithAsk() {
   })
 }
 
-// ---- 开机自启：Task Scheduler 登录触发（比注册表 Run 项更可靠地覆盖便携版） ----
+// ---- 开机自启：注册表 Run 项（HKCU，无需管理员权限；schtasks ONLOGON 触发器必须管理员，普通权限必报「拒绝访问」）----
 function setAutostart(enabled) {
-  const taskName = 'DSH Dock Autostart'
   if (!app.isPackaged) {
-    broadcast({ type: 'log', level: 'warn', line: '[autostart] 开发模式不注册计划任务' })
+    broadcast({ type: 'log', level: 'warn', line: '[autostart] 开发模式不注册开机自启' })
     return
   }
-  const exe = process.execPath
-  if (enabled) {
-    execFile('schtasks.exe', ['/Create', '/F', '/SC', 'ONLOGON', '/TN', taskName, '/TR', '"' + exe + '"'], { windowsHide: true }, (error) => {
-      if (error) {
-        config.saveConfig({ autostart: false }) // 注册失败回滚，UI 与真实状态一致
-        broadcast({ type: 'config-changed', config: config.getConfig() })
-        broadcast({ type: 'log', level: 'err', line: '[autostart] 注册失败：' + error.message })
-      } else {
-        broadcast({ type: 'log', level: 'info', line: '[autostart] 已注册登录启动计划任务' })
-      }
-      refreshTray()
-    })
-  } else {
-    execFile('schtasks.exe', ['/Delete', '/F', '/TN', taskName], { windowsHide: true }, (error) => {
-      broadcast({ type: 'log', level: error && error.code !== 1 ? 'err' : 'info', line: '[autostart] ' + (error && error.code !== 1 ? '移除失败：' + error.message : '已移除登录启动计划任务') })
-      refreshTray()
-    })
+  try {
+    app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath })
+    const actual = app.getLoginItemSettings().openAtLogin
+    if (actual !== enabled) {
+      config.saveConfig({ autostart: actual }) // 注册未生效时回滚，UI 与真实状态一致
+      broadcast({ type: 'config-changed', config: config.getConfig() })
+      broadcast({ type: 'log', level: 'err', line: '[autostart] 注册未生效，已回退为' + (actual ? '开启' : '关闭') })
+    } else {
+      broadcast({ type: 'log', level: 'info', line: enabled ? '[autostart] 已开启开机自启：登录 Windows 后自动拉起' : '[autostart] 已关闭开机自启' })
+    }
+  } catch (error) {
+    config.saveConfig({ autostart: false })
+    broadcast({ type: 'config-changed', config: config.getConfig() })
+    broadcast({ type: 'log', level: 'err', line: '[autostart] 设置失败：' + error.message })
   }
+  refreshTray()
 }
 
 // ---- 从配置解析启动参数（Node 目录 / 项目目录 / 模式），并做就绪兜底 ----
@@ -326,6 +347,10 @@ function wireIpc() {
     }
     const next = config.saveConfig(clean)
     if (clean.autostart !== undefined) setAutostart(clean.autostart)
+    if (clean.theme) {
+      nativeTheme.themeSource = clean.theme // 原生标题栏随应用主题切换
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(clean.theme === 'light' ? '#e7e9ed' : '#0a0c10')
+    }
     broadcast({ type: 'config-changed', config: next })
     return next
   })
@@ -373,9 +398,6 @@ function wireIpc() {
     if (!/^https?:\/\//.test(url)) return
     shell.openExternal(url)
   })
-  ipcMain.handle('win:minimize', () => { if (mainWindow) mainWindow.minimize() })
-  ipcMain.handle('win:hide', () => { if (mainWindow) mainWindow.hide() })
-  ipcMain.handle('win:close', () => { if (mainWindow) mainWindow.close() })
   ipcMain.handle('update:check', () => updater.check(true))
   ipcMain.handle('update:download', () => updater.download())
   ipcMain.handle('update:install', () => updater.triggerInstall())

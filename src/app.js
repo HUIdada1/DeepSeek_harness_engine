@@ -86,7 +86,7 @@ function gaugeVisual(status) {
     readout.classList.add('stopped')
     $('#stateText').textContent = '已停止'
     $('#actHint').textContent = '点击启动'
-    $('#readUp').textContent = 'UP 00:00:00'
+    $('#readUp').textContent = '运行 00:00:00'
     $('#readProbe').textContent = '--'
     $('#specUrl').textContent = '未运行'
     $('#specPid').textContent = '--'
@@ -131,7 +131,7 @@ function startUptime(startedAt) {
     const h = String(Math.floor(seconds / 3600)).padStart(2, '0')
     const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')
     const s = String(seconds % 60).padStart(2, '0')
-    $('#readUp').textContent = 'UP ' + h + ':' + m + ':' + s
+    $('#readUp').textContent = '运行 ' + h + ':' + m + ':' + s
   }
   tick()
   upTimer = setInterval(tick, 1000)
@@ -164,7 +164,7 @@ $('#copyBtn').addEventListener('click', async () => {
   if (!url) return
   try { await navigator.clipboard.writeText(url) } catch { /* 剪贴板失败静默 */ }
   $('#copyBtn').innerHTML = '<i class="ph ph-check"></i>已复制'
-  setTimeout(() => { $('#copyBtn').innerHTML = '<i class="ph ph-copy"></i>复制 URL' }, 1500)
+  setTimeout(() => { $('#copyBtn').innerHTML = '<i class="ph ph-copy"></i>复制地址' }, 1500)
 })
 
 // ---------- Node 环境 ----------
@@ -223,7 +223,7 @@ function renderMode() {
   const specMode = $('#specMode')
   specMode.textContent = ''
   const em = document.createElement('em')
-  em.textContent = mode.toUpperCase()
+  em.textContent = { source: '源码', npm: 'NPM' }[mode] || mode
   specMode.append(em, ' ' + (mode === 'npm' ? 'npx @deepseek-ai/dsh web' : 'pnpm dsh web'))
 }
 for (const btn of $$('#modeBank .lamp-btn')) {
@@ -398,19 +398,16 @@ $('#autoCheckSwitch').addEventListener('click', () => {
 })
 $('#proxyInput').addEventListener('change', () => setConfig({ proxy: $('#proxyInput').value.trim() }))
 
-// ---------- 主题 / 窗口 ----------
+// ---------- 主题 ----------
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme
-  $('#themeLab').textContent = theme.toUpperCase()
+  $('#themeLab').textContent = theme === 'light' ? '亮色' : '暗色'
 }
 $('#themeBtn').addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
   applyTheme(next)
   setConfig({ theme: next })
 })
-$('#minBtn').addEventListener('click', () => window.dock.minimize())
-$('#trayBtn').addEventListener('click', () => window.dock.hideToTray())
-$('#closeBtn').addEventListener('click', () => window.dock.close())
 
 // ---------- 主进程事件 ----------
 window.dock.onEvent((payload) => {
@@ -434,7 +431,7 @@ window.dock.onEvent((payload) => {
   const init = await window.dock.getInit()
   state.config = init.config
   applyTheme(init.config.theme || 'dark')
-  $('#footLine').textContent = 'DSH DOCK v' + init.version + ' · 沐辉' + (init.isPortable ? ' · PORTABLE' : '')
+  $('#aboutLine').textContent = 'DSH Dock v' + init.version + ' · 作者 沐辉' + (init.isPortable ? ' · 便携版' : '')
   $('#logFileLabel').textContent = init.logFile
   $('#portableNote').hidden = !init.isPortable
   renderConfig()

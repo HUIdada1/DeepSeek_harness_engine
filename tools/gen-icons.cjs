@@ -1,12 +1,83 @@
-// 纯 JS 生成应用图标：渐变方圆 + 闪电 + 状态点 → PNG（512/256/64/32/16）→ ICO
-// 不依赖任何原生图像库；PNG 用 zlib.deflateSync 手工封装
+// 图标生成：从 build/icon-source.png（DSH-扫描弧）解码 → 面积平均降采样 → 输出全套
+// build/icon.png(512) / build/icon.ico(256·64·48·32·16) / build/tray.png(16) / build/tray@2x.png(32) / src/assets/icon.png(512)
+// 托盘图标必须精确 16/32px：直接塞大图会让 Windows 自行缩放，导致托盘里偏移、发糊
+// 不依赖任何原生图像库；PNG 解码与编码均用 zlib 手工实现
 'use strict'
 const fs = require('node:fs')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
-const SIZE = 512
 const OUT_DIR = path.join(__dirname, '..', 'build')
+const SOURCE = path.join(OUT_DIR, 'icon-source.png')
+
+// ---- PNG 解码（仅支持 8-bit 非隔行的 RGB / RGBA）----
+function decodePng(buf) {
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  if (!buf.subarray(0, 8).equals(SIG)) throw new Error('不是有效的 PNG 文件')
+  let off = 8
+  let width = 0
+  let height = 0
+  let colorType = 0
+  let interlace = 1
+  const idat = []
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off)
+    const type = buf.toString('ascii', off + 4, off + 8)
+    const data = buf.subarray(off + 8, off + 8 + len)
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0)
+      height = data.readUInt32BE(4)
+      colorType = data[9]
+      interlace = data[12]
+    } else if (type === 'IDAT') {
+      idat.push(data)
+    } else if (type === 'IEND') {
+      break
+    }
+    off += 12 + len
+  }
+  if (interlace !== 0) throw new Error('不支持的 PNG：隔行扫描')
+  const channels = { 2: 3, 6: 4 }[colorType]
+  if (!channels) throw new Error('不支持的 PNG 色彩类型：' + colorType + '（仅支持 RGB/RGBA）')
+  const raw = zlib.inflateSync(Buffer.concat(idat))
+  const stride = width * channels
+  const pixels = Buffer.alloc(height * stride)
+  let pos = 0
+  for (let y = 0; y < height; y++) {
+    const filter = raw[pos++]
+    const line = raw.subarray(pos, pos + stride)
+    pos += stride
+    const rowStart = y * stride
+    for (let x = 0; x < stride; x++) {
+      const left = x >= channels ? pixels[rowStart + x - channels] : 0
+      const up = y > 0 ? pixels[rowStart - stride + x] : 0
+      const ul = y > 0 && x >= channels ? pixels[rowStart - stride + x - channels] : 0
+      let val = line[x]
+      if (filter === 1) val += left
+      else if (filter === 2) val += up
+      else if (filter === 3) val += (left + up) >> 1
+      else if (filter === 4) {
+        const p = left + up - ul
+        const pa = Math.abs(p - left)
+        const pb = Math.abs(p - up)
+        const pc = Math.abs(p - ul)
+        val += pa <= pb && pa <= pc ? left : pb <= pc ? up : ul
+      }
+      pixels[rowStart + x] = val & 0xff
+    }
+  }
+  if (channels === 3) {
+    const rgba = Buffer.alloc(width * height * 4)
+    for (let i = 0; i < width * height; i++) {
+      rgba[i * 4] = pixels[i * 3]
+      rgba[i * 4 + 1] = pixels[i * 3 + 1]
+      rgba[i * 4 + 2] = pixels[i * 3 + 2]
+      rgba[i * 4 + 3] = 255
+    }
+    return { width, height, pixels: rgba }
+  }
+  return { width, height, pixels }
+}
 
 // ---- PNG 编码（RGBA 8-bit）----
 const CRC_TABLE = (() => {
@@ -20,7 +91,7 @@ const CRC_TABLE = (() => {
 })()
 function crc32(buffer) {
   let c = 0xffffffff
-  for (const byte of buffer) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8)
+  for (let i = 0; i < buffer.length; i++) c = CRC_TABLE[(c ^ buffer[i]) & 0xff] ^ (c >>> 8)
   return (c ^ 0xffffffff) >>> 0
 }
 function pngChunk(type, data) {
@@ -50,108 +121,39 @@ function encodePng(pixels, size) {
   ])
 }
 
-// ---- 几何：圆角方圆内的渐变 + 闪电多边形 + 状态点 ----
-function lerp(a, b, t) { return a + (b - a) * t }
-function gradient(t) {
-  // #67E8F9 → #22D3EE → #6366F1 三段
-  const stops = [[0x67, 0xe8, 0xf9], [0x22, 0xd3, 0xee], [0x63, 0x66, 0xf1]]
-  const scaled = t * 2
-  const i = Math.min(1, Math.floor(scaled))
-  const f = Math.min(1, scaled - i)
-  return [
-    Math.round(lerp(stops[i][0], stops[i + 1][0], f)),
-    Math.round(lerp(stops[i][1], stops[i + 1][1], f)),
-    Math.round(lerp(stops[i][2], stops[i + 1][2], f)),
-  ]
-}
-function inRoundedRect(x, y, x0, y0, x1, y1, r) {
-  if (x < x0 || x > x1 || y < y0 || y > y1) return false
-  const dx = Math.max(x0 + r - x, 0, x - (x1 - r))
-  const dy = Math.max(y0 + r - y, 0, y - (y1 - r))
-  return dx * dx + dy * dy <= r * r
-}
-// 闪电轮廓（48 视箱直线多边形，来自 SVG path）
-const BOLT = [[26.6, 8.5], [15.2, 25.4], [22.3, 25.4], [20.4, 39.5], [31.8, 22.6], [24.7, 22.6]]
-function pointInPolygon(x, y, polygon) {
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, yi] = polygon[i]
-    const [xj, yj] = polygon[j]
-    const intersect = (yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
-    if (intersect) inside = !inside
-  }
-  return inside
-}
-
-function renderIcon(size) {
-  const scale = size / SIZE
-  const pad = 40 * scale
-  const radius = 140 * scale
-  const pixels = Buffer.alloc(size * size * 4)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const index = (y * size + x) * 4
-      if (inRoundedRect(x, y, pad, pad, size - pad, size - pad, radius)) {
-        const [r, g, b] = gradient((y - pad) / (size - pad * 2))
-        // 顶部高光渐隐（gloss）
-        const gloss = y < size * 0.55 ? 0.5 * (1 - y / (size * 0.55)) : 0
-        // 内描边：距边缘 3px 内提亮
-        const edge = inRoundedRect(x, y, pad + 5 * scale, pad + 5 * scale, size - pad - 5 * scale, size - pad - 5 * scale, radius - 5 * scale)
-        const border = edge ? 0 : 0.38
-        pixels[index] = Math.min(255, Math.round(lerp(r, 255, gloss) + border * (255 - r) * 0.3))
-        pixels[index + 1] = Math.min(255, Math.round(lerp(g, 255, gloss) + border * (255 - g) * 0.3))
-        pixels[index + 2] = Math.min(255, Math.round(lerp(b, 255, gloss) + border * (255 - b) * 0.3))
-        pixels[index + 3] = 255
-      }
-    }
-  }
-  // 闪电（白色实心，超出圆角矩形区域需裁剪）
-  const scaledBolt = BOLT.map(([bx, by]) => [bx * scale, by * scale])
-  for (let y = Math.floor(8 * scale); y < Math.floor(40 * scale); y++) {
-    for (let x = Math.floor(15 * scale); x < Math.floor(32 * scale); x++) {
-      if (!pointInPolygon(x + 0.5, y + 0.5, scaledBolt)) continue
-      if (!inRoundedRect(x, y, pad, pad, size - pad, size - pad, radius)) continue
-      const index = (y * size + x) * 4
-      pixels[index] = 255
-      pixels[index + 1] = 255
-      pixels[index + 2] = 255
-      pixels[index + 3] = 245
-    }
-  }
-  // 状态点：外暗环 + 绿色圆
-  const cx = 37.5 * scale
-  const cy = 37.5 * scale
-  const ringR = 4.4 * scale
-  const dotR = 3 * scale
-  for (let y = Math.floor(cy - ringR) - 1; y <= cy + ringR + 1; y++) {
-    for (let x = Math.floor(cx - ringR) - 1; x <= cx + ringR + 1; x++) {
-      if (!inRoundedRect(x, y, pad, pad, size - pad, size - pad, radius)) continue
-      const dist = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
-      const index = (y * size + x) * 4
-      if (dist <= dotR) {
-        pixels[index] = 0x4a
-        pixels[index + 1] = 0xde
-        pixels[index + 2] = 0x80
-        pixels[index + 3] = 255
-      } else if (dist <= ringR) {
-        pixels[index] = 0x0b
-        pixels[index + 1] = 0x12
-        pixels[index + 2] = 0x20
-        pixels[index + 3] = 128
-      }
-    }
-  }
-  return pixels
-}
-
-function downscale(pixels, from, to) {
+// ---- 面积平均降采样（预乘 alpha 求均值，透明边缘干净不发黑）----
+function resample(src, from, to) {
   const out = Buffer.alloc(to * to * 4)
   const ratio = from / to
   for (let y = 0; y < to; y++) {
+    const sy0 = Math.floor(y * ratio)
+    const sy1 = Math.min(from, Math.max(sy0 + 1, Math.floor((y + 1) * ratio)))
     for (let x = 0; x < to; x++) {
-      const sx = Math.min(from - 1, Math.floor((x + 0.5) * ratio))
-      const sy = Math.min(from - 1, Math.floor((y + 0.5) * ratio))
-      pixels.copy(out, (y * to + x) * 4, (sy * from + sx) * 4, (sy * from + sx) * 4 + 4)
+      const sx0 = Math.floor(x * ratio)
+      const sx1 = Math.min(from, Math.max(sx0 + 1, Math.floor((x + 1) * ratio)))
+      let r = 0
+      let g = 0
+      let b = 0
+      let a = 0
+      let n = 0
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const i = (sy * from + sx) * 4
+          const w = src[i + 3]
+          r += src[i] * w
+          g += src[i + 1] * w
+          b += src[i + 2] * w
+          a += w
+          n++
+        }
+      }
+      const o = (y * to + x) * 4
+      if (a > 0) {
+        out[o] = Math.round(r / a)
+        out[o + 1] = Math.round(g / a)
+        out[o + 2] = Math.round(b / a)
+      }
+      out[o + 3] = Math.round(a / n)
     }
   }
   return out
@@ -179,15 +181,19 @@ function buildIco(entries) {
   return Buffer.concat([dir, ...entries.map((entry) => entry.data)])
 }
 
+const source = decodePng(fs.readFileSync(SOURCE))
 fs.mkdirSync(OUT_DIR, { recursive: true })
-const master = renderIcon(SIZE)
-fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), encodePng(master, SIZE))
+const master = resample(source.pixels, source.width, 512)
+fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), encodePng(master, 512))
 fs.mkdirSync(path.join(OUT_DIR, '..', 'src', 'assets'), { recursive: true })
-fs.writeFileSync(path.join(OUT_DIR, '..', 'src', 'assets', 'icon.png'), encodePng(master, SIZE))
+fs.writeFileSync(path.join(OUT_DIR, '..', 'src', 'assets', 'icon.png'), encodePng(master, 512))
 const sizes = [256, 64, 48, 32, 16]
 const entries = sizes.map((size) => ({
   size,
-  data: encodePng(size === 256 ? master : downscale(master, SIZE, size), size),
+  data: encodePng(resample(source.pixels, source.width, size), size),
 }))
 fs.writeFileSync(path.join(OUT_DIR, 'icon.ico'), buildIco(entries))
-console.log('[icons] build/icon.ico + build/icon.png 已生成')
+fs.writeFileSync(path.join(OUT_DIR, 'tray.png'), encodePng(resample(source.pixels, source.width, 16), 16))
+fs.writeFileSync(path.join(OUT_DIR, 'tray@2x.png'), encodePng(resample(source.pixels, source.width, 32), 32))
+console.log('[icons] 已从', path.basename(SOURCE), source.width + 'x' + source.height,
+  '生成 icon.png / icon.ico / tray.png / tray@2x.png / src/assets/icon.png')
