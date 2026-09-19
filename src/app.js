@@ -123,8 +123,10 @@ function renderService(payload) {
   gaugeVisual(status)
   if (status === 'running' || status === 'degraded') {
     $('#readProbe').textContent = status === 'running' ? 'OK' : (payload.probeFails || 0) + '/' + 3
-    $('#specUrl').textContent = payload.url || '探测中'
-    $('#specUrl').title = payload.url || '' // 地址过长截断显示，悬停看全文
+    // 地址展示隐藏 ?token= 鉴权串（复制/打开界面仍用完整地址）；悬停可看全文
+    const full = payload.url || ''
+    $('#specUrl').textContent = full ? urlBase(full) : '探测中'
+    $('#specUrl').title = full
     $('#specPid').textContent = payload.pid || '--'
     if (!upTimer && payload.startedAt) startUptime(payload.startedAt)
   }
@@ -140,6 +142,11 @@ function renderService(payload) {
     stopUptime()
     $('#specUrl').title = ''
   }
+}
+// 去掉地址的查询串（?token=...），仅用于展示
+function urlBase(u) {
+  const i = u.indexOf('?')
+  return i === -1 ? u : u.slice(0, i)
 }
 function startUptime(startedAt) {
   stopUptime()
