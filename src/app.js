@@ -78,9 +78,20 @@ let upTimer = null
 function setActions(on) {
   for (const id of ['restartBtn', 'openBtn', 'copyBtn']) $('#' + id).disabled = !on
 }
+function renderPill(status) {
+  const map = {
+    running: ['ok', '运行中'], degraded: ['warn', '异常'],
+    starting: ['warn', '启动中'], stopping: ['warn', '停止中'], stopped: ['err', '已停止'],
+  }
+  const [cls, text] = map[status] || map.stopped
+  $('#pillDot').className = 'dot ' + cls
+  $('#pillText').textContent = text
+  if (status === 'stopped') $('#pillUp').textContent = '00:00:00'
+}
 function gaugeVisual(status) {
-  gaugeBtn.classList.remove('stopped', 'starting')
+  gaugeBtn.classList.remove('stopped', 'starting', 'running', 'degraded')
   readout.classList.remove('stopped', 'starting')
+  renderPill(status)
   if (status === 'stopped') {
     gaugeBtn.classList.add('stopped')
     readout.classList.add('stopped')
@@ -98,6 +109,7 @@ function gaugeVisual(status) {
     $('#stateText').textContent = status === 'starting' ? '启动中' : '停止中'
     $('#actHint').textContent = status === 'starting' ? '正在拉起服务' : '正在终止进程树'
   } else if (status === 'running' || status === 'degraded') {
+    gaugeBtn.classList.add(status === 'degraded' ? 'degraded' : 'running')
     $('#stateText').textContent = status === 'running' ? '运行中' : '异常'
     $('#actHint').textContent = '点击停止'
     arc.style.transition = 'stroke-dashoffset 700ms cubic-bezier(0.32,0.72,0,1)'
@@ -136,7 +148,9 @@ function startUptime(startedAt) {
     const h = String(Math.floor(seconds / 3600)).padStart(2, '0')
     const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')
     const s = String(seconds % 60).padStart(2, '0')
-    $('#readUp').textContent = '运行 ' + h + ':' + m + ':' + s
+    const text = '运行 ' + h + ':' + m + ':' + s
+    $('#readUp').textContent = text
+    $('#pillUp').textContent = h + ':' + m + ':' + s
   }
   tick()
   upTimer = setInterval(tick, 1000)
@@ -166,10 +180,10 @@ $('#openBtn').addEventListener('click', () => {
 })
 $('#copyBtn').addEventListener('click', async () => {
   const url = state.service.url
-  if (!url) return
+  if (!url || $('#copyBtn').classList.contains('copied')) return
   try { await navigator.clipboard.writeText(url) } catch { /* 剪贴板失败静默 */ }
-  $('#copyBtn').innerHTML = '<i class="ph ph-check"></i>已复制'
-  setTimeout(() => { $('#copyBtn').innerHTML = '<i class="ph ph-copy"></i>复制地址' }, 1500)
+  $('#copyBtn').classList.add('copied')
+  setTimeout(() => { $('#copyBtn').classList.remove('copied') }, 1500)
 })
 
 // ---------- Node 环境 ----------
@@ -226,10 +240,8 @@ function renderMode() {
     btn.classList.toggle('on', btn.dataset.mode === mode)
   }
   const specMode = $('#specMode')
-  specMode.textContent = ''
-  const em = document.createElement('em')
-  em.textContent = { source: '源码', npm: 'NPM' }[mode] || mode
-  specMode.append(em, ' ' + (mode === 'npm' ? 'npx @deepseek-ai/dsh web' : 'pnpm dsh web'))
+  specMode.textContent = { source: '源码', npm: 'NPM' }[mode] || mode
+  specMode.title = mode === 'npm' ? 'npx @deepseek-ai/dsh web' : 'pnpm dsh web'
 }
 for (const btn of $$('#modeBank .lamp-btn')) {
   btn.addEventListener('click', async () => {
@@ -383,6 +395,11 @@ function renderConfig() {
   const config = state.config
   if (!config) return
   $('#specClose').textContent = { tray: '托盘常驻', exit: '直接退出', ask: '每次询问' }[config.closeBehavior] || '托盘常驻'
+  const restartCfg = config.autoRestart
+  const restartEnabled = restartCfg && restartCfg.enabled !== false
+  const restartRetries = restartCfg && Number(restartCfg.maxRetries)
+  const restartMax = Number.isFinite(restartRetries) ? restartRetries : 3
+  $('#specRestart').textContent = restartEnabled ? '开启 · ≤' + restartMax + ' 次' : '已关闭'
   for (const btn of $$('#closeBank .lamp-btn')) {
     btn.classList.toggle('on', btn.dataset.close === config.closeBehavior)
   }
@@ -414,13 +431,26 @@ $('#maxRetriesInput').addEventListener('change', () => {
 // ---------- 主题 ----------
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme
-  $('#themeLab').textContent = theme === 'light' ? '亮色' : '暗色'
 }
 $('#themeBtn').addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
   applyTheme(next)
   setConfig({ theme: next })
 })
+
+// ---------- 配置页签（环境 / 项目） ----------
+for (const tab of $$('.env-tabs .tab')) {
+  tab.addEventListener('click', () => {
+    if (tab.classList.contains('on')) return
+    for (const other of $$('.env-tabs .tab')) {
+      other.classList.toggle('on', other === tab)
+      other.setAttribute('aria-selected', other === tab)
+    }
+    for (const pane of $$('.pane')) {
+      pane.classList.toggle('on', pane.id === 'pane-' + tab.dataset.tab)
+    }
+  })
+}
 
 // ---------- 主进程事件 ----------
 window.dock.onEvent((payload) => {
