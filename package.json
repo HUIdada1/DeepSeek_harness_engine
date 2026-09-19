@@ -1,6 +1,6 @@
 {
   "name": "dsh-dock",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DSH Dock 引擎坞：deepseek-harness 可视化启动管理器（启停 / 环境自愈 / 托盘常驻 / 热更新）",
   "author": "沐辉",
   "license": "MIT",

@@ -467,7 +467,8 @@ body {
 .log-body {
   padding: 8px 12px 10px;
   font-family: Consolas, "Microsoft YaHei UI", monospace; font-size: 12px; line-height: 1.85;
-  height: 278px; overflow-y: auto;
+  flex: 1; min-height: 278px; /* 撑满头部与底部状态条之间：状态条钉在卡底，高度随卡片自适应 */
+  overflow-y: auto;
   white-space: pre-wrap; word-break: break-all;
 }
 .log-line .t { color: var(--ink-3); margin-right: 12px; }

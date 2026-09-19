@@ -11,7 +11,9 @@ const path = require('node:path')
 
 const URL_RE = /dsh web:\s*(https?:\/\/[^\s]+)/i
 const FALLBACK_PORT = 3080
-const URL_WAIT_MS = 30_000
+const URL_WAIT_MS = 30_000 // 首次宽限后提示：npm 模式 npx 首次启动要现场下载发布包，30s+ 很常见
+const URL_CHECK_MS = 30_000 // 提示后的复查间隔，顺带轮询回退探测默认端口
+const URL_FAIL_MS = 150_000 // 判定启动失败的总上限
 const PROBE_INTERVAL_MS = 5_000
 const PROBE_FAIL_TOLERANCE = 3
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024
@@ -33,6 +35,7 @@ let logOffset = 0
 let tailPrimed = false // initTailOffset 已执行过，markStopped 才允许排干尾巴
 let tailTimer = null
 let urlTimer = null
+let urlGuardGen = 0 // 守卫代际：start/adopt 重建守卫后，旧守卫在途的探测回调全部作废
 let probeTimer = null
 let restartTimer = null
 let restartAttempts = 0
@@ -223,21 +226,61 @@ function stopProbing() {
   probeFails = 0
 }
 
+// 分层等待 URL：30s 无 URL 只提示不报错（进程活着就继续等），每 30s 复查一次回退端口，
+// 150s 仍无才判定启动失败。此前固定 30s 即报「服务异常」，但 npm 模式首次启动 npx 要
+// 现场下载发布包，实测 48s 才输出 URL——进程好好的却被误报失败，还弹错误弹窗
 function urlWaitGuard() {
   clearTimeout(urlTimer)
-  urlTimer = setTimeout(async () => {
+  const gen = ++urlGuardGen
+  const base = Date.now()
+  let warned = false
+  const check = async () => {
+    if (gen !== urlGuardGen) return // 守卫已被新一轮 start/adopt/stop 接管
     urlTimer = null
     if (status !== 'starting' || state.url) return
-    // 30s 无 URL：回退探测默认端口（方案 6 #8）
     const fallback = 'http://127.0.0.1:' + FALLBACK_PORT + '/'
     const ok = await probeOnce(fallback)
+    if (gen !== urlGuardGen || status !== 'starting' || state.url) return
     if (ok) {
       emit({ type: 'log', level: 'warn', line: '[state] stdout 未解析到 URL，回退探测 ' + fallback + ' 成功（无 token）' })
       onUrlFound(fallback)
-    } else {
-      emit({ type: 'log', level: 'err', line: '[state] ' + URL_WAIT_MS / 1000 + 's 内未解析到 URL 且默认端口无响应，请查看日志' })
+      return
     }
-  }, URL_WAIT_MS)
+    const elapsed = Date.now() - base
+    if (elapsed >= URL_FAIL_MS) {
+      await failUrlWait()
+      return
+    }
+    if (!warned) {
+      warned = true
+      emit({ type: 'log', level: 'warn', line: '[state] ' + Math.round(elapsed / 1000) + 's 未解析到 URL，服务进程仍在运行，继续等待（npm 模式首次启动需下载发布包，可能较慢）' })
+    }
+    urlTimer = setTimeout(check, URL_CHECK_MS)
+  }
+  urlTimer = setTimeout(check, URL_WAIT_MS)
+}
+
+// URL 等待超时收口：主动终止进程树后如实置 stopped，并交给自动重启退避重试
+// （此时 npx 包缓存已热，重试成功率高）。不依赖 taskkill 的退出码判定，
+// 直接摘掉 exit/error 监听后自行收口，避免 onDeath 与本流程双重触发重启
+async function failUrlWait() {
+  const self = child
+  if (status !== 'starting' || !self || userStop) return // 已被进程退出 / 用户停止收口
+  emit({ type: 'log', level: 'err', line: '[state] ' + URL_FAIL_MS / 1000 + 's 内未解析到 URL 且默认端口无响应，判定启动失败' })
+  self.removeAllListeners('exit')
+  self.removeAllListeners('error')
+  if (self.pid && pidAlive(self.pid)) {
+    emit({ type: 'log', level: 'info', line: '[action] 停止服务 · taskkill /T /F pid=' + self.pid + '（启动超时）' })
+    await taskkillTree(self.pid)
+  }
+  if (userStop) return // 收口期间用户已叫停，交由 stop() 收尾
+  child = null
+  state.pid = null
+  state.url = ''
+  state.port = null
+  markStopped()
+  userStop = false
+  maybeAutoRestart()
 }
 
 // 终态统一收口：清定时器并如实置 stopped
