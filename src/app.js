@@ -406,11 +406,6 @@ $('#releasesBtn').addEventListener('click', () => window.dock.openReleases())
 function renderConfig() {
   const config = state.config
   if (!config) return
-  const restartCfg = config.autoRestart
-  const restartEnabled = restartCfg && restartCfg.enabled !== false
-  const restartRetries = restartCfg && Number(restartCfg.maxRetries)
-  const restartMax = Number.isFinite(restartRetries) ? restartRetries : 3
-  $('#specRestart').textContent = restartEnabled ? '开启 · ≤' + restartMax + ' 次' : '已关闭'
   for (const btn of $$('#closeBank .lamp-btn')) {
     btn.classList.toggle('on', btn.dataset.close === config.closeBehavior)
   }
