@@ -257,6 +257,24 @@
     </div>
   </div>
 
+  <!-- 错误弹窗：启动失败 / 进程异常退出 / 初始化失败等场景，展示实际报错与最近日志 -->
+  <div class="overlay" id="errOverlay" hidden>
+    <div class="modal err-modal" role="alertdialog" aria-modal="true" aria-label="错误提示">
+      <div class="err-head">
+        <span class="err-ico" aria-hidden="true">!</span>
+        <h2 id="errTitle">出错了</h2>
+        <button class="modal-close" id="errClose" aria-label="关闭错误提示">×</button>
+      </div>
+      <p class="err-msg" id="errMsg"></p>
+      <pre class="err-detail" id="errDetail" hidden></pre>
+      <div class="up-actions err-actions">
+        <button class="btn" id="errCopy">复制错误信息</button>
+        <button class="btn" id="errLogBtn">打开日志</button>
+        <button class="btn primary" id="errOk">知道了</button>
+      </div>
+    </div>
+  </div>
+
 <script src="app.js"></script>
 </body>
 </html>

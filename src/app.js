@@ -177,7 +177,10 @@ gaugeBtn.addEventListener('click', async () => {
   const projectDir = $('#projPathInput').value.trim()
   const mode = state.config.launchMode || 'source'
   const result = await window.dock.start({ projectDir, mode })
-  if (result && result.error) appendLog('[start] ' + result.error, 'err')
+  if (result && result.error) {
+    appendLog('[start] ' + result.error, 'err')
+    showErrorDialog('服务启动失败', result.error, recentLogTail())
+  }
 })
 
 $('#restartBtn').addEventListener('click', () => window.dock.restart())
@@ -328,7 +331,11 @@ $('#initBtn').addEventListener('click', async () => {
     const projectDir = $('#projPathInput').value.trim()
     const result = await window.dock.runInit({ projectDir, mode: state.config.launchMode || 'source' })
     if (!result || !result.ok) {
-      appendLog('[init] 初始化失败' + (result && result.failedStep ? '于步骤 ' + result.failedStep : ''), 'err')
+      const stepText = result && result.failedStep
+        ? '于步骤「' + ({ pnpm: '检查 pnpm', install: '安装依赖', build: '构建产物', project: '项目目录' }[result.failedStep] || result.failedStep) + '」失败'
+        : '失败'
+      appendLog('[init] 初始化' + stepText, 'err')
+      showErrorDialog('初始化失败', '一键初始化' + stepText + '，请检查 Node 环境与网络后重试', recentLogTail(20))
     } else {
       appendLog('[init] 一键初始化全部完成', 'ok')
     }
@@ -359,7 +366,10 @@ $('#settingsBtn').addEventListener('click', () => { overlay.hidden = false })
 $('#modalClose').addEventListener('click', () => { overlay.hidden = true })
 overlay.addEventListener('click', (event) => { if (event.target === overlay) overlay.hidden = true })
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !overlay.hidden) overlay.hidden = true
+  if (event.key === 'Escape') {
+    if (!errOverlay.hidden) errOverlay.hidden = true
+    else if (!overlay.hidden) overlay.hidden = true
+  }
 })
 for (const tab of $$('.modal-tabs .tab')) {
   tab.addEventListener('click', () => {
@@ -408,6 +418,41 @@ $('#checkBtn').addEventListener('click', async () => {
 $('#dlBtn').addEventListener('click', () => window.dock.downloadUpdate())
 $('#installBtn').addEventListener('click', () => window.dock.installUpdate())
 $('#releasesBtn').addEventListener('click', () => window.dock.openReleases())
+
+// ---------- 错误弹窗：启动失败 / 进程异常退出等场景，展示实际报错与最近日志 ----------
+const errOverlay = $('#errOverlay')
+let errLast = { message: '', at: 0 }
+function recentLogTail(count = 14) {
+  const lines = [...logBody.children].filter((div) => !div.classList.contains('cursor-line'))
+  return lines.slice(-count).map((div) => div.textContent).join('\n')
+}
+function showErrorDialog(title, message, detail) {
+  const now = Date.now()
+  if (message && message === errLast.message && now - errLast.at < 10_000) return // 同一错误 10s 内不重复弹
+  errLast = { message, at: now }
+  $('#errTitle').textContent = title || '出错了'
+  $('#errMsg').textContent = message || '发生未知错误，请打开日志查看详情'
+  const box = $('#errDetail')
+  if (detail) { box.textContent = detail; box.hidden = false } else { box.textContent = ''; box.hidden = true }
+  errOverlay.hidden = false
+}
+$('#errClose').addEventListener('click', () => { errOverlay.hidden = true })
+$('#errOk').addEventListener('click', () => { errOverlay.hidden = true })
+errOverlay.addEventListener('click', (event) => { if (event.target === errOverlay) errOverlay.hidden = true })
+$('#errLogBtn').addEventListener('click', () => window.dock.openLogFolder())
+$('#errCopy').addEventListener('click', async () => {
+  const text = $('#errTitle').textContent + '\n' + $('#errMsg').textContent + '\n\n' + ($('#errDetail').textContent || '')
+  try { await navigator.clipboard.writeText(text) } catch { /* 剪贴板失败静默 */ }
+  const btn = $('#errCopy')
+  btn.textContent = '已复制'
+  setTimeout(() => { btn.textContent = '复制错误信息' }, 1500)
+})
+// 服务域错误日志 → 弹窗（同一错误节流；窗口隐藏在托盘时先记录，打开窗口即可见）
+const ERR_POPUP_RE = /^\[(service|start|state|adopt|autostart)\]/
+function maybeErrorPopup(line) {
+  if (!ERR_POPUP_RE.test(line)) return
+  showErrorDialog('服务异常', line.replace(/^\[[^\]]+\]\s*/, ''), recentLogTail())
+}
 
 // ---------- 配置项 ----------
 function renderConfig() {
@@ -468,7 +513,10 @@ for (const tab of $$('.env-tabs .tab')) {
 // ---------- 主进程事件 ----------
 window.dock.onEvent((payload) => {
   if (payload.type === 'service') renderService(payload)
-  else if (payload.type === 'log') appendLog(payload.line, payload.level)
+  else if (payload.type === 'log') {
+    appendLog(payload.line, payload.level)
+    if (payload.level === 'err') maybeErrorPopup(payload.line)
+  }
   else if (payload.type === 'update') renderUpdate(payload)
   else if (payload.type === 'init') {
     $('#initFill').style.width = payload.pct + '%'
@@ -512,4 +560,7 @@ window.dock.onEvent((payload) => {
   }
   renderMode()
   scheduleReadiness()
-})().catch((error) => appendLog('[dock] 初始化失败：' + ((error && error.message) || error), 'err'))
+})().catch((error) => {
+  appendLog('[dock] 初始化失败：' + ((error && error.message) || error), 'err')
+  showErrorDialog('DSH Dock 初始化失败', (error && error.message) || String(error), '')
+})
