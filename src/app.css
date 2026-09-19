@@ -465,7 +465,7 @@ body {
 .log-body {
   padding: 8px 12px 10px;
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 11px; line-height: 1.9;
-  height: 258px; overflow-y: auto;
+  height: 278px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-all;
 }
 .log-line .t { color: var(--ink-3); margin-right: 12px; }
@@ -486,8 +486,9 @@ body {
 @keyframes blink { 50% { opacity: 0; } }
 .console-foot {
   display: flex; align-items: center; gap: 14px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--line-soft);
+  padding: 4px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--card-2);
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 10px; color: var(--ink-3);
 }
 .console-foot .sp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
