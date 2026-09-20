@@ -183,6 +183,16 @@ function checkInstalled() {
   return status
 }
 
+// 安装不完整（如部分文件未落盘/被安全软件拦截）时 resources 下会缺 app-update.yml，
+// electron-updater 一进 checkForUpdates 就 ENOENT；此场景同样只能手动下载，复用便携版直连检测
+function canAutoUpdate() {
+  try {
+    return require('node:fs').existsSync(path.join(process.resourcesPath, 'app-update.yml'))
+  } catch {
+    return false
+  }
+}
+
 // 便携版用 Electron net 模块（走系统代理）；latest 直链会 302，手动跟随
 function netFetch(url, redirectsLeft) {
   return new Promise((resolve, reject) => {
@@ -228,7 +238,7 @@ function netFetch(url, redirectsLeft) {
   })
 }
 
-async function checkPortable() {
+async function checkPortable(manualNote) {
   setState('checking')
   const attempts = [LATEST_YML_URL]
   if (mirrorFallbackEnabled()) attempts.push(MIRROR_PREFIX + LATEST_YML_URL)
@@ -240,10 +250,10 @@ async function checkPortable() {
       if (!match) throw new Error('版本信息格式异常')
       const latest = match[1].trim()
       if (compareVersions(latest, app.getVersion()) > 0) {
-        setState('available', { latestVersion: latest, percent: 0, message: '' })
+        setState('available', { latestVersion: latest, percent: 0, message: manualNote || '' })
         if (!currentCheckIsManual) notifyAvailable(latest)
       } else {
-        setState('up-to-date', { latestVersion: '', notes: '', percent: 0, message: '' })
+        setState('up-to-date', { latestVersion: '', notes: '', percent: 0, message: manualNote || '' })
       }
       return status
     } catch (error) {
@@ -266,12 +276,18 @@ function check(manual) {
     lastManualCheckAt = now
   }
   currentCheckIsManual = !!manual
-  if (isPortable()) return checkPortable()
+  if (!app.isPackaged) return checkInstalled()
+  if (isPortable() || !canAutoUpdate()) {
+    // 置 isPortable：渲染层据此禁用应用内下载/安装，走手动下载引导
+    status.isPortable = true
+    const note = isPortable() ? '' : '当前安装不完整，无法应用内更新，请到 Releases 重新下载安装包'
+    return checkPortable(note)
+  }
   return checkInstalled()
 }
 
 function download() {
-  if (isPortable() || status.phase !== 'available' || !autoUpdater) return status
+  if (isPortable() || !canAutoUpdate() || status.phase !== 'available' || !autoUpdater) return status
   autoUpdater.downloadUpdate().catch(() => {})
   return status
 }
