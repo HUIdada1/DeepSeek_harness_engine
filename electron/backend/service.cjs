@@ -42,6 +42,8 @@ let restartAttempts = 0
 let userStop = false
 let probeFails = 0
 let adoptPromise = null
+const RECENT_LOG_MAX = 48
+let recentLogLines = [] // 用于识别「修配置前重启无效」的致命启动错误
 
 const state = {
   pid: null,
@@ -96,9 +98,16 @@ function rotateIfNeeded() {
     if (error.code !== 'ENOENT') throw error
   }
 }
+function noteLogLine(line) {
+  if (!line) return
+  recentLogLines.push(String(line))
+  if (recentLogLines.length > RECENT_LOG_MAX) recentLogLines.shift()
+}
+
 function appendDockLine(line) {
   fs.mkdirSync(path.dirname(logPath()), { recursive: true })
   fs.appendFileSync(logPath(), line + '\n', 'utf8')
+  noteLogLine(line)
 }
 function initTailOffset() {
   try {
@@ -129,6 +138,7 @@ function pollTail(silent = false) {
   for (const raw of buffer.subarray(0, cut + 1).toString('utf8').split(/\r?\n/)) {
     const line = raw.trim()
     if (!line) continue
+    noteLogLine(line)
     emit({ type: 'log', line })
     const match = line.match(URL_RE)
     if (match && !state.url && !silent) {
@@ -324,7 +334,23 @@ async function start(startOpts, options = {}) {
     } catch (rotateError) {
       emit({ type: 'log', level: 'warn', line: '[log] 轮转失败（可能有进程仍持有日志句柄），继续追加：' + (rotateError.message || rotateError) })
     }
+    recentLogLines = []
+    // 启动前按模式校验/自愈凭证：源码要 version: 1（数字）；NPM 旧包不认 versioned v1
     const envModule = require('./env.cjs')
+    const credentials = require('./credentials.cjs').ensureCredentialsForMode({
+      mode: opts.mode === 'npm' ? 'npm' : 'source',
+      hasLocalProject: Boolean(opts.projectDir && envModule.validateProjectDir(opts.projectDir)),
+    })
+    if (credentials.fixed) {
+      emit({ type: 'log', level: 'ok', line: '[credentials] ' + credentials.message + '（' + credentials.path + '）' })
+    } else if (!credentials.ok) {
+      emit({ type: 'log', level: 'err', line: '[credentials] ' + credentials.message + (credentials.error ? '：' + credentials.error : '') + '（' + credentials.path + '）' })
+      markStopped()
+      return getStatus()
+    } else if (credentials.message) {
+      emit({ type: 'log', level: 'info', line: '[credentials] ' + credentials.message })
+    }
+
     const env = envModule.nodeEnv(opts.nodeDir)
     // npm 模式 npx 每次启动要查 registry；用户未自配源时兜底国内镜像。
     // 只限 npm 模式：source 模式的 dsh 运行时插件解析依赖官方源完整性，注入镜像会坏
@@ -337,6 +363,9 @@ async function start(startOpts, options = {}) {
     // 下会被本地 node_modules 结构干扰而找不到 bin（实测 'dsh' 不是内部或外部命令），
     // 固定用 Dock 数据目录作 cwd
     const spawnCwd = opts.mode === 'npm' ? require('./config.cjs').appDataDir() : opts.projectDir
+    if (opts.mode === 'npm' && opts.projectDir && envModule.validateProjectDir(opts.projectDir)) {
+      emit({ type: 'log', level: 'warn', line: '[start] 当前为 NPM 模式：实际运行的是 registry 发布包，不会使用本地仓库 ' + opts.projectDir + '。本地改代码 / 跟开发分支请切换到「源码」模式。' })
+    }
     emit({ type: 'log', level: 'info', line: '[spawn] 分离进程启动：' + baseCommand + '（cwd ' + spawnCwd + '）' })
     appendDockLine('[dock] ---- DSH Dock 启动服务 ' + new Date().toISOString() + ' ----')
     initTailOffset()
@@ -390,8 +419,11 @@ async function start(startOpts, options = {}) {
       state.url = ''
       state.port = null
       if (userStop || status === 'stopping') return
+      // 排干尾巴再判致命错误：credentials 等栈常落在最后几行
+      try { pollTail(true) } catch { /* 排干失败不阻塞收口 */ }
       // 0=正常结束 / 0xC000013A=Ctrl+C / 关闭终端：判定为人为停止，不进自动重启
       const manual = kind === 'exit' && MANUAL_STOP_CODES.has(Number(detail))
+      const fatal = require('./credentials.cjs').fatalBootReason(recentLogLines)
       try {
         if (kind === 'error') {
           emit({ type: 'log', level: 'err', line: '[service] 进程启动失败：' + detail })
@@ -402,9 +434,12 @@ async function start(startOpts, options = {}) {
           appendDockLine('[dock] 服务进程异常退出 code=' + detail + ' ' + new Date().toISOString())
           emit({ type: 'log', level: 'err', line: '[service] 服务进程异常退出（code=' + detail + '），最近日志见上' })
         }
+        if (fatal) {
+          emit({ type: 'log', level: 'err', line: '[service] 检测到配置致命错误，跳过自动重启：' + fatal })
+        }
       } catch { /* 日志写入失败不阻塞状态收口 */ }
       markStopped() // 如实反映进程已死，再进入退避
-      if (!manual) maybeAutoRestart()
+      if (!manual && !fatal) maybeAutoRestart()
     }
     self.once('error', (error) => onDeath('error', error && error.message ? error.message : String(error)))
     self.once('exit', (code) => onDeath('exit', code))

@@ -333,11 +333,32 @@ function setAutostart(enabled) {
 // ---- 从配置解析启动参数（Node 目录 / 项目目录 / 模式），并做就绪兜底 ----
 async function resolveStartOpts(overrides) {
   const configData = config.getConfig()
-  const projectDir = overrides.projectDir || configData.projectDir
-  if (!env.validateProjectDir(projectDir)) {
-    return { error: '项目目录无效：未找到 @deepseek-ai/dsh-root 仓库，请在「项目目录」中确认' }
+  const projectDir = overrides.projectDir || configData.projectDir || ''
+  let mode = overrides.mode || configData.launchMode || 'source'
+  const credentials = require('./backend/credentials.cjs')
+  const credPath = credentials.credentialsPath()
+  let credLayout = 'missing'
+  try {
+    if (fs.existsSync(credPath)) credLayout = credentials.detectCredentialsLayout(fs.readFileSync(credPath, 'utf8'))
+  } catch { /* 读失败交给后续 ensureCredentialsForMode 报 */ }
+
+  // versioned v1 凭证与 NPM 发布包不兼容：有本地仓库时自动改走源码，避免启动即崩
+  if (mode === 'npm' && credLayout === 'versioned-v1' && env.validateProjectDir(projectDir)) {
+    broadcast({
+      type: 'log',
+      level: 'warn',
+      line: '[start] 检测到 versioned v1 凭证，与 NPM 发布包不兼容；已自动改用「源码」模式启动本地仓库 ' + projectDir,
+    })
+    mode = 'source'
   }
-  const mode = overrides.mode || configData.launchMode || 'source'
+
+  // 源码模式必须指向本地 deepseek-harness 仓库；npm 模式跑发布包，项目目录可选
+  if (mode === 'source' && !env.validateProjectDir(projectDir)) {
+    return { error: '项目目录无效：未找到 @deepseek-ai/dsh-root 仓库，请在「项目目录」中确认，或改用 NPM 模式（需扁平凭证文件）' }
+  }
+  if (mode === 'npm' && projectDir && !env.validateProjectDir(projectDir)) {
+    broadcast({ type: 'log', level: 'warn', line: '[start] 项目目录不是有效的 deepseek-harness 仓库，NPM 模式将忽略该路径并继续启动' })
+  }
   let nodeDir = overrides.nodeDir || configData.node.path || ''
   if (nodeDir && path.basename(nodeDir).toLowerCase() === 'node.exe') {
     nodeDir = path.dirname(nodeDir) // 允许配置到 node.exe 或其目录
@@ -348,9 +369,13 @@ async function resolveStartOpts(overrides) {
     if (!ok) return { error: '未检测到满足 ^22.19 || >=24 的 Node，请先在「Node 环境」中处理' }
     nodeDir = path.dirname(ok.path)
   }
-  config.rememberProject(projectDir)
-  config.saveConfig({ projectDir, launchMode: mode, node: { path: path.join(nodeDir, 'node.exe') } })
-  return { opts: { projectDir, mode, nodeDir } }
+  if (projectDir && env.validateProjectDir(projectDir)) config.rememberProject(projectDir)
+  config.saveConfig({
+    projectDir: projectDir || configData.projectDir || '',
+    launchMode: mode,
+    node: { path: path.join(nodeDir, 'node.exe') },
+  })
+  return { opts: { projectDir: projectDir || '', mode, nodeDir } }
 }
 
 async function startFromConfig(overrides = {}) {

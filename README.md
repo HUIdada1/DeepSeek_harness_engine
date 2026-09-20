@@ -76,6 +76,9 @@
 - **检测不到 Node？** 已支持 nvm-windows / fnm / volta，也可在设置中手动指定路径。
 - **便携版能自动更新吗？** 不能，仅红点提示新版本，需手动下载替换。
 - **数据存在哪？** `%APPDATA%\dsh-dock`（config.json / state.json / logs/）。
+- **启动秒退 / 凭证报错？** 本地新源码与 NPM 发布包的凭证格式不兼容：源码要 `version: 1`（YAML **数字**）+ `refs:` 嵌套；NPM 旧包只要扁平 `KEY: "value"`。Dock 会按模式自愈/拦截——有本地仓库且凭证已是 v1 时自动改走「源码」模式；纯配置错误不再空转自动重启。
+- **本地有仓库却像没跑到源码？** 确认启动方式是「源码」而不是「NPM」。NPM 模式走 `npx @deepseek-ai/dsh` 发布包，不会使用你选的本地仓库。
+- **对话里工具显示 `Interrupted` / `reading 'prepare'`？** 这是 deepseek-harness 运行时在执行工具阶段失败后的表现，不是 Dock UI 画错。请用源码模式拉起与本地仓库一致的构建，并检查 `~/.dsh/profiles/web` 第三方插件是否引入了冲突依赖。
 
 ## 🛠️ 开发与构建
 
