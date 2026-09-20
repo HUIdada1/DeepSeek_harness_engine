@@ -204,7 +204,10 @@ function renderNode(info) {
   $('#nodePathInput').value = activePath
   const activeVersion = (configuredPath && state.config.node.version) || (current && current.version) || '--'
   $('#nodeBig').textContent = activeVersion
-  const satisfies = current ? current.satisfies : false
+  // 徽章按当前生效的 node 判定（配置选中优先，否则 PATH 默认），
+  // 与上方显示的 activeVersion 保持一致：current 可能是未切换的旧默认版本
+  const active = (info && info.candidates && info.candidates.find((item) => item.path === activePath)) || current
+  const satisfies = active ? active.satisfies : false
   $('#nodeFit').hidden = !satisfies
   $('#nodeBad').hidden = satisfies
   $('#nodeLed').classList.toggle('off', !satisfies)
