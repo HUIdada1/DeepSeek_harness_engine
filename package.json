@@ -1,6 +1,6 @@
 {
   "name": "dsh-dock",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "DSH Dock 引擎坞：deepseek-harness 可视化启动管理器（启停 / 环境自愈 / 托盘常驻 / 热更新）",
   "author": "沐辉",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "dev": "electron .",
     "start": "electron .",
     "gen:icons": "node tools/gen-icons.cjs",
-    "test": "node --test \"tests/**/*.test.cjs\"",
+    "test": "node --test tests/",
     "dist": "electron-builder --win nsis portable",
     "release": "electron-builder --win nsis portable --publish always"
   },

@@ -464,10 +464,12 @@ body {
 .console-head h2 { font-size: 14px; font-weight: 650; margin-right: 4px; }
 .console-head .tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
 .console-head .btn { height: 27px; padding: 0 11px; font-size: 12px; }
+/* 日志容器：自身不参与内容撑高（绝对定位子元素不贡献高度），卡片高度只由头部/底条/最小高度决定，日志再多也只内部滚动 */
+.log-wrap { position: relative; flex: 1; min-height: 278px; }
 .log-body {
+  position: absolute; inset: 0;
   padding: 8px 12px 10px;
   font-family: Consolas, "Microsoft YaHei UI", monospace; font-size: 12px; line-height: 1.85;
-  flex: 1; min-height: 278px; /* 撑满头部与底部状态条之间：状态条钉在卡底，高度随卡片自适应 */
   overflow-y: auto;
   white-space: pre-wrap; word-break: break-all;
 }
